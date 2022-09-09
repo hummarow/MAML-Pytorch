@@ -61,7 +61,6 @@ class Meta(nn.Module):
 
         return total_norm/counter
 
-
     def forward(self, x_spt, y_spt, x_qry, y_qry):
         """
 
@@ -77,10 +76,10 @@ class Meta(nn.Module):
         losses_q = [0 for _ in range(self.update_step + 1)]  # losses_q[i] is the loss on step i
         corrects = [0 for _ in range(self.update_step + 1)]
 
-
         for i in range(task_num):
 
             # 1. run the i-th task and compute loss for k=0
+            # self.net = Learner()
             logits = self.net(x_spt[i], vars=None, bn_training=True)
             loss = F.cross_entropy(logits, y_spt[i])
             grad = torch.autograd.grad(loss, self.net.parameters())
@@ -127,7 +126,8 @@ class Meta(nn.Module):
                     correct = torch.eq(pred_q, y_qry[i]).sum().item()  # convert to numpy
                     corrects[k + 1] = corrects[k + 1] + correct
 
-
+            print(losses_q)
+            input()
 
         # end of all tasks
         # sum over all losses on query set across all tasks
