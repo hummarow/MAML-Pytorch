@@ -7,6 +7,7 @@ import collections
 from PIL import Image
 import csv
 import random
+import glob
 
 
 class MiniImagenet(Dataset):
@@ -62,13 +63,21 @@ class MiniImagenet(Dataset):
                                                  ])
 
         self.path = os.path.join(root, 'images')  # image path
+        images = glob.glob(root + '/*/*/*.jpg')
+        self.images = {}
+        for img in images:
+            _, name = os.path.split(img)
+            self.images[name] = img
         csvdata = self.loadCSV(os.path.join(root, mode + '.csv'))  # csv path
+        # self.data <- csvdata 속의 file class
         self.data = []
         self.img2label = {}
         for i, (k, v) in enumerate(csvdata.items()):
             self.data.append(v)  # [[img1, img2, ...], [img111, ...]]
             self.img2label[k] = i + self.startidx  # {"img_name[:9]":label}
         self.cls_num = len(self.data)
+#        print(len(self.data))
+#        print(len(self.data[0]))
 
         self.create_batch(self.batchsz)
 
@@ -139,14 +148,16 @@ class MiniImagenet(Dataset):
         # [querysz]
         query_y = np.zeros((self.querysz), dtype=np.int)
 
-        flatten_support_x = [os.path.join(self.path, item)
-                             for sublist in self.support_x_batch[index] for item in sublist]
+#        flatten_support_x = [os.path.join(self.path, item)
+#                             for sublist in self.support_x_batch[index] for item in sublist]
+        flatten_support_x = [self.images[item] for sublist in self.support_x_batch[index] for item in sublist]
         support_y = np.array(
             [self.img2label[item[:9]]  # filename:n0153282900000005.jpg, the first 9 characters treated as label
              for sublist in self.support_x_batch[index] for item in sublist]).astype(np.int32)
 
-        flatten_query_x = [os.path.join(self.path, item)
-                           for sublist in self.query_x_batch[index] for item in sublist]
+#        flatten_query_x = [os.path.join(self.path, item)
+#                           for sublist in self.query_x_batch[index] for item in sublist]
+        flatten_query_x = [self.images[item] for sublist in self.query_x_batch[index] for item in sublist]
         query_y = np.array([self.img2label[item[:9]]
                             for sublist in self.query_x_batch[index] for item in sublist]).astype(np.int32)
 
@@ -190,7 +201,7 @@ if __name__ == '__main__':
     plt.ion()
 
     tb = SummaryWriter('runs', 'mini-imagenet')
-    mini = MiniImagenet('../mini-imagenet/', mode='train', n_way=5, k_shot=1, k_query=1, batchsz=1000, resize=168)
+    mini = MiniImagenet('../Datasets/mini-imagenet/', mode='train', n_way=5, k_shot=1, k_query=1, batchsz=1000, resize=168)
 
     for i, set_ in enumerate(mini):
         # support_x: [k_shot*n_way, 3, 84, 84]
