@@ -126,8 +126,8 @@ class Meta(nn.Module):
                     correct = torch.eq(pred_q, y_qry[i]).sum().item()  # convert to numpy
                     corrects[k + 1] = corrects[k + 1] + correct
 
-            print(losses_q)
-            input()
+#            print(losses_q)
+#            input()
 
         # end of all tasks
         # sum over all losses on query set across all tasks
