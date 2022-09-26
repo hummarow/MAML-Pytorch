@@ -1,16 +1,28 @@
-import  torch, os
-import  numpy as np
-from    MiniImagenet import MiniImagenet
-import  scipy.stats
-from    torch.utils.data import DataLoader
-from    torch.optim import lr_scheduler
-import  random, sys, pickle
-import  argparse
+import torch, os
+import numpy as np
+import scipy.stats
+import random, sys, pickle
+import argparse
+import tensorboard
+import matplotlib.pyplot as plt
+import os
+from MiniImagenet import MiniImagenet
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+from torch.optim import lr_scheduler
+from collections import defaultdict
 
 from meta import Meta
 
 
 imagenet_path = '/home/bjk/Datasets/mini-imagenet/'
+
+# Tensorboard custom scalar layout
+layout = {
+    "Accuracy": {
+        "Accuracy": ["Multiline", ["Accuracy/Train", "Accuracy/Test"]]
+    }
+}
 
 
 def mean_confidence_interval(accs, confidence=0.95):
@@ -67,6 +79,10 @@ def main():
                              k_query=args.k_qry,
                              batchsz=100, resize=args.imgsz)
 
+    log_path = os.path.join('logs', 'L' + str(args.ord) + '_Reg' + str(args.reg) + args.log_dir)
+    writer = SummaryWriter(log_path)
+    writer.add_custom_scalars(layout)
+
     for epoch in range(args.epoch//10000):
         # fetch meta_batchsz num of episode each time
         db = DataLoader(mini, args.task_num, shuffle=True, num_workers=1, pin_memory=True)
@@ -75,10 +91,13 @@ def main():
 
             x_spt, y_spt, x_qry, y_qry = x_spt.to(device), y_spt.to(device), x_qry.to(device), y_qry.to(device)
 
-            accs = maml(x_spt, y_spt, x_qry, y_qry)
+            accs = maml(x_spt, y_spt, x_qry, y_qry, step+len(db)*epoch)
 
             if step % 30 == 0:
                 print('step:', step, '\ttraining acc:', accs)
+                writer.add_scalar('Accuracy/Train',
+                                  accs[-1],
+                                  step + epoch*len(db))
 
             if step % 500 == 0 or step == (len(db) - 1):  # evaluation
                 db_test = DataLoader(mini_test, 1, shuffle=True, num_workers=1, pin_memory=True)
@@ -94,6 +113,12 @@ def main():
                 # [b, update_step+1]
                 accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
                 print('Test acc:', accs)
+                writer.add_scalar('Accuracy',
+                                  accs[-1],
+                                  step + epoch*len(db))
+                writer.add_scalar('Accuracy/Test',
+                                  accs[-1],
+                                  step + epoch*len(db))
 
 
 if __name__ == '__main__':
@@ -110,7 +135,12 @@ if __name__ == '__main__':
     argparser.add_argument('--update_lr', type=float, help='task-level inner update learning rate', default=0.01)
     argparser.add_argument('--update_step', type=int, help='task-level inner update steps', default=5)
     argparser.add_argument('--update_step_test', type=int, help='update steps for finetunning', default=10)
+    argparser.add_argument('--reg', type=float, help='coefficient for regularizer', default=1.0)
+    argparser.add_argument('--log_dir', type=str, help='log directory for tensorboard', default='')
+    argparser.add_argument('--ord', type=int, help='order of norms among fine-tuned weights', default=2)
 
     args = argparser.parse_args()
+    if args.log_dir != '':
+        args.log_dir = '_' + args.log_dir
 
     main()
