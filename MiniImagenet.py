@@ -76,8 +76,6 @@ class MiniImagenet(Dataset):
             self.data.append(v)  # [[img1, img2, ...], [img111, ...]]
             self.img2label[k] = i + self.startidx  # {"img_name[:9]":label}
         self.cls_num = len(self.data)
-#        print(len(self.data))
-#        print(len(self.data[0]))
 
         self.create_batch(self.batchsz)
 
@@ -189,6 +187,31 @@ class MiniImagenet(Dataset):
     def __len__(self):
         # as we have built up to batchsz of sets, you can sample some small batch size of sets.
         return self.batchsz
+
+
+class MiniImagenet_aug(MiniImagenet):
+    def __init__(self, root, mode, batchsz, n_way, k_shot, k_query, resize, startidx=0, get_original=False):
+        super().__init__(root, mode, batchsz, n_way, k_shot, k_query, resize, startidx=0)
+        self.aug = transforms.Compose([transforms.RandomHorizontalFlip(),
+                                       transforms.RandomRotation((30,70)),
+                                       transforms.GaussianBlur(5)
+                                      ])
+        self.get_original = get_original
+
+    # TODO: Error-prone
+    def __getitem__(self, index):
+        spt_x, spt_y, qry_x, qry_y = super().__getitem__(index)
+        spt_aug = torch.FloatTensor(spt_x.shape)
+        qry_aug = torch.FloatTensor(qry_x.shape)
+        for i in range(len(spt_x)):
+            spt_aug[i] = self.aug(spt_x[i])
+        for i in range(len(qry_x)):
+            qry_aug[i] = self.aug(qry_x[i])
+
+        if self.get_original:
+            return spt_aug, spt_y, qry_aug, qry_y, spt_x, qry_x
+        else:
+            return spt_aug, spt_y, qry_aug, qry_y
 
 
 if __name__ == '__main__':

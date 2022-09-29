@@ -1,13 +1,13 @@
 import torch
 import numpy as np
 import os
+import configs
 from torch import nn
 from torch import optim
 from torch.nn import functional as F
 from torch.utils.data import TensorDataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch import linalg as LA
-
 from learner import Learner
 from copy import deepcopy
 
@@ -33,11 +33,12 @@ class Meta(nn.Module):
         self.update_step_test = args.update_step_test
         self.reg = args.reg
         self.ord = args.ord
+        self.aug = args.aug
+        self.qry_aug = args.qry_aug
 
         self.net = Learner(config, args.imgc, args.imgsz)
         self.meta_optim = optim.Adam(self.net.parameters(), lr=self.meta_lr)
-
-        log_path = os.path.join('logs', 'L' + str(args.ord) + '_Reg' + str(args.reg) + args.log_dir)
+        log_path = configs.get_path(args.reg, args.ord, args.log_dir, args.aug)
         self.writer = SummaryWriter(log_path)
 
 
@@ -64,7 +65,7 @@ class Meta(nn.Module):
 
         return total_norm/counter
 
-    def forward(self, x_spt, y_spt, x_qry, y_qry, t):
+    def forward(self, x_spt, y_spt, x_qry, y_qry, t, spt_aug=None, qry_aug=None):
         """
         :param x_spt:   [b, setsz, c_, h, w]
         :param y_spt:   [b, setsz]
@@ -72,6 +73,11 @@ class Meta(nn.Module):
         :param y_qry:   [b, querysz]
         :return:
         """
+        assert (self.aug and torch.is_tensor(spt_aug) and torch.is_tensor(qry_aug)) or (not self.aug)
+        x_qry_orig, y_qry_orig = x_qry, y_qry
+        if self.qry_aug:
+            x_qry = torch.cat([x_qry, qry_aug], dim=1)
+            y_qry = torch.cat([y_qry, y_qry], dim=1)
         task_num, setsz, c_, h, w = x_spt.size()
         querysz = x_qry.size(1)
 
@@ -82,8 +88,45 @@ class Meta(nn.Module):
 
         fast_weights = [phi] * task_num
 #        fast_weights = torch.empty(len(self.net.parameters()), task_num)
+        if self.aug:
+            fast_weights_aug = [phi] * task_num
+            losses_q_aug = [0 for _ in range(self.update_step + 1)]  # losses_q[i] is the loss on step i
 
         for i in range(task_num):
+            if self.aug:
+                # Augmented data
+                logits = self.net(spt_aug[i], vars=None, bn_training=True)
+                loss = F.cross_entropy(logits, y_spt[i])
+                grad = torch.autograd.grad(loss, self.net.parameters())
+                fast_weights_aug[i] = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, self.net.parameters())))
+
+                with torch.no_grad():
+                    logits_q = self.net(qry_aug[i], self.net.parameters(), bn_training=True)
+                    loss_q = F.cross_entropy(logits_q, y_qry_orig[i])
+                    losses_q_aug[0] += loss_q
+
+                # this is the loss and accuracy after the first update
+#                with torch.no_grad():
+                    # [setsz, nway]
+                    logits_q = self.net(qry_aug[i], fast_weights_aug[i], bn_training=True)
+                    loss_q = F.cross_entropy(logits_q, y_qry_orig[i])
+                    losses_q_aug[1] += loss_q
+                    # [setsz]
+
+                for k in range(1, self.update_step):
+                    # 1. run the i-th task and compute loss for k=1~K-1
+                    logits = self.net(spt_aug[i], fast_weights_aug[i], bn_training=True)
+                    loss = F.cross_entropy(logits, y_spt[i])
+                    # 2. compute grad on theta_pi
+                    grad = torch.autograd.grad(loss, fast_weights_aug[i], create_graph=True, retain_graph=True)
+                    # 3. theta_pi = theta_pi - train_lr * grad
+                    fast_weights_aug[i] = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, fast_weights_aug[i])))
+
+                    logits_q = self.net(qry_aug[i], fast_weights_aug[i], bn_training=True)
+                    # loss_q will be overwritten and just keep the loss_q on last update step.
+                    loss_q = F.cross_entropy(logits_q, y_qry_orig[i])
+                    losses_q_aug[k + 1] += loss_q
+
 
             # 1. run the i-th task and compute loss for k=0
             # self.net = Learner()
@@ -142,7 +185,7 @@ class Meta(nn.Module):
 #                    key_list.remove(key)
 #            for j, key in enumerate(key_list):
 #                state_dict[key] = state_dict[key] - self.reg * (state_dict[key] - fast_weights[i][j])
-#            
+#           
 #            self.net.load_state_dict(state_dict)
 
 
@@ -155,7 +198,6 @@ class Meta(nn.Module):
 ####################################################################################
 
         weight_flat = []
-
         for i in range(len(fast_weights)):
             w = None
             for fw in fast_weights[i]:
@@ -166,15 +208,38 @@ class Meta(nn.Module):
             weight_flat.append(w)
 
         weight_flat = torch.stack(weight_flat, axis=1)
+        if not self.aug:
+            average_weight = torch.mean(weight_flat, dim=1, keepdim=True)
 
-        average_weight = torch.mean(weight_flat, dim=1, keepdim=True)
+            # Reset origin
+            weight_flat = weight_flat - average_weight
+#            norm = torch.norm(weight_flat, p='fro')
+#
+            norm = LA.vector_norm(weight_flat, ord=self.ord)
 
-#        # Reset origin
-        weight_flat = weight_flat - average_weight
-#        norm = torch.norm(weight_flat, p='fro')
+        else:
+            weight_flat_aug = []
+            for i in range(len(fast_weights_aug)):
+                w = None
+                for fw in fast_weights_aug[i]:
+                    if not torch.is_tensor(w):
+                        w = torch.flatten(fw)
+                    else:
+                        w = torch.cat([w, torch.flatten(fw)], dim=0)
+                weight_flat_aug.append(w)
+            weight_flat_aug = torch.stack(weight_flat_aug, axis=1)
+#            diff = weight_flat - weight_flat_aug
+            st = torch.stack([weight_flat, weight_flat_aug])
+            diff = torch.norm(st, p='fro', dim=0)
+            diff = torch.norm(diff, p='fro', dim=0)
 
-        norm = LA.vector_norm(weight_flat, ord=self.ord)
-#        norm = norm * norm
+            norm = torch.mean(diff)
+
+            # 다른 방식
+#            average_weight = torch.mean(weight_flat, dim=1, keepdim=True)
+#            average_weight_aug = torch.mean(weight_flat_aug, dim=1, keepdim=True)
+#            diff = average_weight - average_weight_aug
+#            norm = LA.vector_norm(diff, ord=self.ord)
 
         self.writer.add_scalar("Distance", norm, t)
         self.writer.add_scalar("loss", loss_q, t)
@@ -207,7 +272,7 @@ class Meta(nn.Module):
 #            for i, key in enumerate(key_list):
 #                state_dict[key] = state_dict[key] - fw[i]
 #        self.net.load_state_dict(state_dict)
-        
+
         accs = np.array(corrects) / (querysz * task_num)
 
         return accs
