@@ -103,9 +103,7 @@ def main():
             for step, (spt_aug, y_spt, qry_aug, y_qry, x_spt, x_qry) in enumerate(db):
                 x_spt, y_spt, x_qry, y_qry = x_spt.to(device), y_spt.to(device), x_qry.to(device), y_qry.to(device)
                 spt_aug, qry_aug = spt_aug.to(device), qry_aug.to(device)
-
                 accs = maml(x_spt, y_spt, x_qry, y_qry, step+len(db)*epoch, spt_aug=spt_aug, qry_aug=qry_aug)
-
                 if step % 30 == 0:
                     print('step:', step, '\ttraining acc:', accs)
                     writer.add_scalar('Accuracy/Train',
@@ -229,6 +227,7 @@ if __name__ == '__main__':
                            default=False)
     argparser.add_argument('--test', type=str, help='use original test set, or augmented set, or both', default='original')
     argparser.add_argument('--qry_aug', action='store_true', help='use augmented query set when meta-updating parameters', default=False)
+    argparser.add_argument('--original_augmentation', action='store_true', help='...', default=False)
 
     args = argparser.parse_args()
     if args.log_dir != '':

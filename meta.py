@@ -35,6 +35,7 @@ class Meta(nn.Module):
         self.ord = args.ord
         self.aug = args.aug
         self.qry_aug = args.qry_aug
+        self.original_augmentation = args.original_augmentation
 
         self.net = Learner(config, args.imgc, args.imgsz)
         self.meta_optim = optim.Adam(self.net.parameters(), lr=self.meta_lr)
@@ -73,7 +74,7 @@ class Meta(nn.Module):
         :param y_qry:   [b, querysz]
         :return:
         """
-        assert (self.aug and torch.is_tensor(spt_aug) and torch.is_tensor(qry_aug)) or (not self.aug)
+        assert (self.aug and torch.is_tensor(spt_aug) and torch.is_tensor(qry_aug)) or (not self.aug) or (self.original_augmentation)
         x_qry_orig, y_qry_orig = x_qry, y_qry
         if self.qry_aug:
             x_qry = torch.cat([x_qry, qry_aug], dim=1)
@@ -88,12 +89,12 @@ class Meta(nn.Module):
 
         fast_weights = [phi] * task_num
 #        fast_weights = torch.empty(len(self.net.parameters()), task_num)
-        if self.aug:
+        if self.aug and not self.original_augmentation:
             fast_weights_aug = [phi] * task_num
             losses_q_aug = [0 for _ in range(self.update_step + 1)]  # losses_q[i] is the loss on step i
 
         for i in range(task_num):
-            if self.aug:
+            if self.aug and not self.original_augmentation:
                 # Augmented data
                 logits = self.net(spt_aug[i], vars=None, bn_training=True)
                 loss = F.cross_entropy(logits, y_spt[i])
@@ -196,7 +197,6 @@ class Meta(nn.Module):
 ####################################################################################
 # Weight Clustering
 ####################################################################################
-
         weight_flat = []
         for i in range(len(fast_weights)):
             w = None
@@ -208,6 +208,7 @@ class Meta(nn.Module):
             weight_flat.append(w)
 
         weight_flat = torch.stack(weight_flat, axis=1)
+
         if not self.aug:
             average_weight = torch.mean(weight_flat, dim=1, keepdim=True)
 
@@ -240,16 +241,15 @@ class Meta(nn.Module):
 #            average_weight_aug = torch.mean(weight_flat_aug, dim=1, keepdim=True)
 #            diff = average_weight - average_weight_aug
 #            norm = LA.vector_norm(diff, ord=self.ord)
-
-        self.writer.add_scalar("Distance", norm, t)
-        self.writer.add_scalar("loss", loss_q, t)
-
-        loss_q += self.reg * norm
+    
+            self.writer.add_scalar("Distance", norm, t)
+            self.writer.add_scalar("loss", loss_q, t)
+    
+            loss_q += self.reg * norm
 
 ###############################################################################
 # End Weight Clustering
 ####################################################################################
-
         self.writer.add_scalar("loss+Distance", loss_q, t)
 # MAML
         # optimize theta parameters
