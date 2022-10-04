@@ -219,6 +219,8 @@ class Meta(nn.Module):
             norm = LA.vector_norm(weight_flat, ord=self.ord)
 
         else:
+            if self.original_augmentation:
+                fast_weights_aug = fast_weights
             weight_flat_aug = []
             for i in range(len(fast_weights_aug)):
                 w = None
@@ -251,7 +253,6 @@ class Meta(nn.Module):
 # End Weight Clustering
 ####################################################################################
         self.writer.add_scalar("loss+Distance", loss_q, t)
-# MAML
         # optimize theta parameters
         self.meta_optim.zero_grad()
         loss_q.backward()
@@ -261,18 +262,6 @@ class Meta(nn.Module):
         # 	print(torch.norm(p).item())
 
         self.meta_optim.step()
-
-# Reptile
-#        state_dict = self.net.state_dict()
-#        key_list = list(state_dict.keys())
-#        for key in state_dict.keys():
-#            if 'bn' in key:
-#                key_list.remove(key)
-#        for fw in fast_weights:
-#            for i, key in enumerate(key_list):
-#                state_dict[key] = state_dict[key] - fw[i]
-#        self.net.load_state_dict(state_dict)
-
         accs = np.array(corrects) / (querysz * task_num)
 
         return accs

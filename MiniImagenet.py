@@ -8,6 +8,7 @@ from PIL import Image
 import csv
 import random
 import glob
+import sys
 
 
 class MiniImagenet(Dataset):
