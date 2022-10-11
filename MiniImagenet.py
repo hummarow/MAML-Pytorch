@@ -1,13 +1,17 @@
 import os
 import torch
-from torch.utils.data import Dataset
-from torchvision.transforms import transforms
 import numpy as np
 import collections
-from PIL import Image
 import csv
 import random
 import glob
+import sys
+import random
+from PIL import Image
+from torch.utils.data import Dataset
+from torchvision.transforms import transforms
+from copy import deepcopy
+from imagenet_c import corrupt
 
 
 class MiniImagenet(Dataset):
@@ -23,7 +27,8 @@ class MiniImagenet(Dataset):
     sets: conains n_way * k_shot for meta-train set, n_way * n_query for meta-test set.
     """
 
-    def __init__(self, root, mode, batchsz, n_way, k_shot, k_query, resize, startidx=0):
+    def __init__(self, root, mode, batchsz, n_way, k_shot, k_query, resize, startidx=0, aug=False):
+#    def __init__(self, root, mode, args):
         """
 
         :param root: root path of mini-imagenet
@@ -44,23 +49,13 @@ class MiniImagenet(Dataset):
         self.querysz = self.n_way * self.k_query  # number of samples per set for evaluation
         self.resize = resize  # resize to
         self.startidx = startidx  # index label not from 0, but from startidx
+        self.aug = aug # Add augmentation or not
+        self.mode = mode
         print('shuffle DB :%s, b:%d, %d-way, %d-shot, %d-query, resize:%d' % (
         mode, batchsz, n_way, k_shot, k_query, resize))
 
-        if mode == 'train':
-            self.transform = transforms.Compose([lambda x: Image.open(x).convert('RGB'),
-                                                 transforms.Resize((self.resize, self.resize)),
-                                                 # transforms.RandomHorizontalFlip(),
-                                                 # transforms.RandomRotation(5),
-                                                 transforms.ToTensor(),
-                                                 transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-                                                 ])
-        else:
-            self.transform = transforms.Compose([lambda x: Image.open(x).convert('RGB'),
-                                                 transforms.Resize((self.resize, self.resize)),
-                                                 transforms.ToTensor(),
-                                                 transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-                                                 ])
+        self.transform = self.get_transform(False, mode)
+        self.transform_aug = self.get_transform(True, mode)
 
         self.path = os.path.join(root, 'images')  # image path
         images = glob.glob(root + '/*/*/*.jpg')
@@ -78,6 +73,67 @@ class MiniImagenet(Dataset):
         self.cls_num = len(self.data)
 
         self.create_batch(self.batchsz)
+
+    def get_transform(self, aug, mode):
+        """
+        Return the transform function with or without augmentation
+        """
+        if mode == 'train':
+            transform = transforms.Compose([lambda x: np.asarray(Image.open(x).convert('RGB')),
+                                            lambda x: self.corrupt_c(x, aug),
+                                            lambda x: Image.fromarray(x),
+                                            transforms.Resize((self.resize, self.resize)),
+                                            lambda x: self.augmentation(x, aug),
+                                            transforms.ToTensor(),
+                                            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+                                            ])
+        else:
+            transform = transforms.Compose([lambda x: Image.open(x).convert('RGB'),
+                                            transforms.Resize((self.resize, self.resize)),
+                                            transforms.ToTensor(),
+                                            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+                                            ])
+
+        return transform
+
+    def corrupt_c(self, img, aug, prob):
+        """
+        Return a imagenet-c corrupted image.
+        (gaussian_noise, gaussian_blur)
+        if no augmentation is required,
+        return input image without any transformation.
+
+        Keyword arguments:
+        img -- Numpy Array with size [224, 224, 3]
+        aug -- bool, augmentation or not
+        """
+        if aug == False:
+            return img
+        else:
+            if random.random() <= prob:
+                corruption_names = [
+                                    'gaussian_noise',
+                                    'gaussian_blur',
+                                   ]
+                for cor in corruption_names:
+                    img = corrupt(img, corruption_name = cor)
+            return img
+
+    def augmentation(self, img, aug, prob):
+        """
+        Return a [flipped, rotated] image.
+        if no augmentation is required,
+        return input image without any transformation.
+        """
+        if aug == False:
+            return img
+        else:
+            transform = transforms.Compose([
+                                            transforms.RandomHorizontalFlip(p=prob),
+                                            transforms.RandomRotation((0,70)),
+                                            ])
+            return transform(img)
+
 
     def loadCSV(self, csvf):
         """
@@ -146,20 +202,15 @@ class MiniImagenet(Dataset):
         # [querysz]
         query_y = np.zeros((self.querysz), dtype=np.int)
 
-#        flatten_support_x = [os.path.join(self.path, item)
-#                             for sublist in self.support_x_batch[index] for item in sublist]
         flatten_support_x = [self.images[item] for sublist in self.support_x_batch[index] for item in sublist]
         support_y = np.array(
             [self.img2label[item[:9]]  # filename:n0153282900000005.jpg, the first 9 characters treated as label
              for sublist in self.support_x_batch[index] for item in sublist]).astype(np.int32)
 
-#        flatten_query_x = [os.path.join(self.path, item)
-#                           for sublist in self.query_x_batch[index] for item in sublist]
         flatten_query_x = [self.images[item] for sublist in self.query_x_batch[index] for item in sublist]
         query_y = np.array([self.img2label[item[:9]]
                             for sublist in self.query_x_batch[index] for item in sublist]).astype(np.int32)
 
-        # print('global:', support_y, query_y)
         # support_y: [setsz]
         # query_y: [querysz]
         # unique: [n-way], sorted
@@ -174,44 +225,28 @@ class MiniImagenet(Dataset):
 
         # print('relative:', support_y_relative, query_y_relative)
 
+        if self.aug:
+            support_x_aug = deepcopy(support_x)
+            query_x_aug = deepcopy(query_x)
         for i, path in enumerate(flatten_support_x):
             support_x[i] = self.transform(path)
+            if self.aug:
+                support_x_aug[i] = self.transform_aug(path)
 
         for i, path in enumerate(flatten_query_x):
             query_x[i] = self.transform(path)
+            if self.aug:
+                query_x_aug[i] = self.transform_aug(path)
         # print(support_set_y)
         # return support_x, torch.LongTensor(support_y), query_x, torch.LongTensor(query_y)
 
+        if self.aug and self.mode=='train':
+            return support_x, torch.LongTensor(support_y_relative), query_x, torch.LongTensor(query_y_relative), support_x_aug, query_x_aug
         return support_x, torch.LongTensor(support_y_relative), query_x, torch.LongTensor(query_y_relative)
 
     def __len__(self):
         # as we have built up to batchsz of sets, you can sample some small batch size of sets.
         return self.batchsz
-
-
-class MiniImagenet_aug(MiniImagenet):
-    def __init__(self, root, mode, batchsz, n_way, k_shot, k_query, resize, startidx=0, get_original=False):
-        super().__init__(root, mode, batchsz, n_way, k_shot, k_query, resize, startidx=0)
-        self.aug = transforms.Compose([transforms.RandomHorizontalFlip(),
-                                       transforms.RandomRotation((30,70)),
-                                       transforms.GaussianBlur(5)
-                                      ])
-        self.get_original = get_original
-
-    # TODO: Error-prone
-    def __getitem__(self, index):
-        spt_x, spt_y, qry_x, qry_y = super().__getitem__(index)
-        spt_aug = torch.FloatTensor(spt_x.shape)
-        qry_aug = torch.FloatTensor(qry_x.shape)
-        for i in range(len(spt_x)):
-            spt_aug[i] = self.aug(spt_x[i])
-        for i in range(len(qry_x)):
-            qry_aug[i] = self.aug(qry_x[i])
-
-        if self.get_original:
-            return spt_aug, spt_y, qry_aug, qry_y, spt_x, qry_x
-        else:
-            return spt_aug, spt_y, qry_aug, qry_y
 
 
 if __name__ == '__main__':
@@ -224,21 +259,28 @@ if __name__ == '__main__':
     plt.ion()
 
     tb = SummaryWriter('runs', 'mini-imagenet')
-    mini = MiniImagenet('../Datasets/mini-imagenet/', mode='train', n_way=5, k_shot=1, k_query=1, batchsz=1000, resize=168)
+    mini = MiniImagenet('../Datasets/mini-imagenet/', mode='train', n_way=5, k_shot=1, k_query=1, batchsz=1000, resize=168, aug=True)
+#    mini_aug = MiniImagenet('../Datasets/mini-imagenet/', mode='train', n_way=5, k_shot=1, k_query=1, batchsz=1000, resize=168, aug=True)
 
     for i, set_ in enumerate(mini):
         # support_x: [k_shot*n_way, 3, 84, 84]
         support_x, support_y, query_x, query_y = set_
 
         support_x = make_grid(support_x, nrow=2)
+#        support_x_aug = make_grid(mini_aug[0][0], nrow=2)
         query_x = make_grid(query_x, nrow=2)
 
         plt.figure(1)
         plt.imshow(support_x.transpose(2, 0).numpy())
+#        plt.savefig('asd.png')
         plt.pause(0.5)
         plt.figure(2)
         plt.imshow(query_x.transpose(2, 0).numpy())
         plt.pause(0.5)
+        plt.figure(3)
+#        plt.imshow(support_x_aug.transpose(2, 0).numpy())
+#        plt.savefig('asd_aug.png')
+#        plt.pause(0.5)
 
         tb.add_image('support_x', support_x)
         tb.add_image('query_x', query_x)
