@@ -6,4 +6,4 @@ __pycache__
 logs/
 *.swp
 todo
-.png
+*.png
