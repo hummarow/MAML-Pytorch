@@ -5,3 +5,5 @@ omniglot
 __pycache__
 logs/
 *.swp
+todo
+.png
