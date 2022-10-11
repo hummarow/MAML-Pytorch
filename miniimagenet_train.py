@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import os
 import configs
 
-from MiniImagenet import MiniImagenet, MiniImagenet_aug
+from MiniImagenet import MiniImagenet 
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim import lr_scheduler
@@ -70,26 +70,15 @@ def main():
     print(maml)
     print('Total trainable tensors:', num)
 
-    if args.aug:
-        mini_aug = MiniImagenet_aug(imagenet_path, mode='train',
-                                n_way=args.n_way, k_shot=args.k_spt,
-                                k_query=args.k_qry,
-                                batchsz=10000, resize=args.imgsz, get_original=True)
-    else:
-        # batchsz here means total episode number
-        mini = MiniImagenet(imagenet_path, mode='train',
-                            n_way=args.n_way, k_shot=args.k_spt,
-                            k_query=args.k_qry,
-                            batchsz=10000, resize=args.imgsz)
+    # batchsz here means total episode number
+    mini = MiniImagenet(imagenet_path, mode='train',
+                        n_way=args.n_way, k_shot=args.k_spt,
+                        k_query=args.k_qry,
+                        batchsz=10000, resize=args.imgsz, aug=args.aug|args.original_augmentation)
     mini_test = MiniImagenet(imagenet_path, mode='test',
                              n_way=args.n_way, k_shot=args.k_spt,
                              k_query=args.k_qry,
-                             batchsz=100, resize=args.imgsz)
-    
-    mini_test_aug = MiniImagenet_aug(imagenet_path, mode='test',
-                                 n_way=args.n_way, k_shot=args.k_spt,
-                                 k_query=args.k_qry,
-                                 batchsz=100, resize=args.imgsz, get_original=False)
+                             batchsz=100, resize=args.imgsz, aug=args.aug|args.original_augmentation)
 
     log_path = configs.get_path(args.reg, args.ord, args.log_dir, args.aug)
 
@@ -97,13 +86,13 @@ def main():
     writer.add_custom_scalars(layout)
 
     for epoch in range(args.epoch//10000):
-        if args.aug:
+        if args.aug | args.original_augmentation:
             # fetch meta_batchsz num of episode each time
-            db = DataLoader(mini_aug, args.task_num, shuffle=True, num_workers=1, pin_memory=True)
-            for step, (spt_aug, y_spt, qry_aug, y_qry, x_spt, x_qry) in enumerate(db):
+            db = DataLoader(mini, args.task_num, shuffle=True, num_workers=1, pin_memory=True)
+            for step, (x_spt, y_spt, x_qry, y_qry, x_spt_aug, x_qry_aug) in enumerate(db):
                 x_spt, y_spt, x_qry, y_qry = x_spt.to(device), y_spt.to(device), x_qry.to(device), y_qry.to(device)
-                spt_aug, qry_aug = spt_aug.to(device), qry_aug.to(device)
-                accs = maml(x_spt, y_spt, x_qry, y_qry, step+len(db)*epoch, spt_aug=spt_aug, qry_aug=qry_aug)
+                x_spt_aug, x_qry_aug = x_spt_aug.to(device), x_qry_aug.to(device)
+                accs = maml(x_spt, y_spt, x_qry, y_qry, step+len(db)*epoch, spt_aug=x_spt_aug, qry_aug=x_qry_aug)
                 if step % 30 == 0:
                     print('step:', step, '\ttraining acc:', accs)
                     writer.add_scalar('Accuracy/Train',
@@ -131,26 +120,26 @@ def main():
                         writer.add_scalar('Accuracy/Test',
                                           accs[-1],
                                           step + epoch*len(db))
-                    if args.test in ['aug', 'both']:
-                        db_test = DataLoader(mini_test_aug, 1, shuffle=True, num_workers=1, pin_memory=True)
-                        accs_all_test = []
-
-                        for x_spt, y_spt, x_qry, y_qry in db_test:
-                            x_spt, y_spt, x_qry, y_qry = x_spt.squeeze(0).to(device), y_spt.squeeze(0).to(device), \
-                                                         x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
-
-                            accs = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
-                            accs_all_test.append(accs)
-
-                        # [b, update_step+1]
-                        accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
-                        print('Test acc:', accs)
-                        writer.add_scalar('Accuracy',
-                                          accs[-1],
-                                          step + epoch*len(db))
-                        writer.add_scalar('Accuracy/AugTest',
-                                          accs[-1],
-                                          step + epoch*len(db))
+#                    if args.test in ['aug', 'both']:
+#                        db_test = DataLoader(mini_test_aug, 1, shuffle=True, num_workers=1, pin_memory=True)
+#                        accs_all_test = []
+#
+#                        for x_spt, y_spt, x_qry, y_qry in db_test:
+#                            x_spt, y_spt, x_qry, y_qry = x_spt.squeeze(0).to(device), y_spt.squeeze(0).to(device), \
+#                                                         x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
+#
+#                            accs = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
+#                            accs_all_test.append(accs)
+#
+#                        # [b, update_step+1]
+#                        accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
+#                        print('Test acc:', accs)
+#                        writer.add_scalar('Accuracy',
+#                                          accs[-1],
+#                                          step + epoch*len(db))
+#                        writer.add_scalar('Accuracy/AugTest',
+#                                          accs[-1],
+#                                          step + epoch*len(db))
 
         else:
             db = DataLoader(mini, args.task_num, shuffle=True, num_workers=1, pin_memory=True)
@@ -187,23 +176,24 @@ def main():
                         writer.add_scalar('Accuracy/Test',
                                           accs[-1],
                                           step + epoch*len(db))
-                    if args.test in ['aug', 'both']:
-                        db_test = DataLoader(mini_test_aug, 1, shuffle=True, num_workers=1, pin_memory=True)
-                        accs_all_test = []
-
-                        for x_spt, y_spt, x_qry, y_qry in db_test:
-                            x_spt, y_spt, x_qry, y_qry = x_spt.squeeze(0).to(device), y_spt.squeeze(0).to(device), \
-                                                         x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
-
-                            accs = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
-                            accs_all_test.append(accs)
-
-                        # [b, update_step+1]
-                        accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
-                        print('Test acc:', accs)
-                        writer.add_scalar('Accuracy/AugTest',
-                                          accs[-1],
-                                          step + epoch*len(db))
+# mini_test_aug deprecated
+#                    if args.test in ['aug', 'both']:
+#                        db_test = DataLoader(mini_test_aug, 1, shuffle=True, num_workers=1, pin_memory=True)
+#                        accs_all_test = []
+#
+#                        for x_spt, y_spt, x_qry, y_qry in db_test:
+#                            x_spt, y_spt, x_qry, y_qry = x_spt.squeeze(0).to(device), y_spt.squeeze(0).to(device), \
+#                                                         x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
+#
+#                            accs = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
+#                            accs_all_test.append(accs)
+#
+#                        # [b, update_step+1]
+#                        accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
+#                        print('Test acc:', accs)
+#                        writer.add_scalar('Accuracy/AugTest',
+#                                          accs[-1],
+#                                          step + epoch*len(db))
 
 
 if __name__ == '__main__':
