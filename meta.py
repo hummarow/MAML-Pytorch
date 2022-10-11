@@ -81,17 +81,13 @@ class Meta(nn.Module):
            and the distances between original dataset and augmented dataset are used as regularizer.
         2. aug flag is not set.
            The learning procedure is done without augmentation.
-        3. original_augmentation flag is set, and augmented support set and query set are given.
+        3. original_augmentation flag is set, and augmented support set and query set are NOT given.
            The learning procedure is done with augmented dataset.
         """
-        assert ((self.aug or self.original_augmentation) and torch.is_tensor(spt_aug) and torch.is_tensor(qry_aug)) or (not self.aug)
+        assert (self.aug and torch.is_tensor(spt_aug) and torch.is_tensor(qry_aug)) or (not self.aug) or (self.original_augmentation and not (torch.is_tensor(spt_aug) or torch.is_tensor(qry_aug)))
 
         x_qry_orig, y_qry_orig = x_qry, y_qry
-        if self.original_augmentation:
-            x_spt = torch.cat([x_spt, spt_aug], dim=1)
-            y_spt = torch.cat([y_spt, y_spt], dim=1)
-
-        if self.original_augmentation or self.qry_aug:
+        if self.qry_aug:
             x_qry = torch.cat([x_qry, qry_aug], dim=1)
             y_qry = torch.cat([y_qry, y_qry], dim=1)
 
@@ -210,16 +206,6 @@ class Meta(nn.Module):
             weight_flat.append(w)
 
         weight_flat = torch.stack(weight_flat, axis=1)
-# ? 이거 무슨 코드지?
-#        if not self.aug:
-#            average_weight = torch.mean(weight_flat, dim=1, keepdim=True)
-#
-#            # Reset origin
-#            weight_flat = weight_flat - average_weight
-##            norm = torch.norm(weight_flat, p='fro')
-#            norm = LA.vector_norm(weight_flat, ord=self.ord)
-#
-#        else:
         if self.original_augmentation:
             fast_weights_aug = fast_weights
         weight_flat_aug = []

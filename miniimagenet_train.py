@@ -71,14 +71,8 @@ def main():
     print('Total trainable tensors:', num)
 
     # batchsz here means total episode number
-    mini = MiniImagenet(imagenet_path, mode='train',
-                        n_way=args.n_way, k_shot=args.k_spt,
-                        k_query=args.k_qry,
-                        batchsz=10000, resize=args.imgsz, aug=args.aug|args.original_augmentation)
-    mini_test = MiniImagenet(imagenet_path, mode='test',
-                             n_way=args.n_way, k_shot=args.k_spt,
-                             k_query=args.k_qry,
-                             batchsz=100, resize=args.imgsz, aug=args.aug|args.original_augmentation)
+    mini = MiniImagenet(imagenet_path, mode='train', batchsz=10000, args=args)
+    mini_test = MiniImagenet(imagenet_path, mode='test', batchsz=100, args=args)
 
     log_path = configs.get_path(args.reg, args.ord, args.log_dir, args.aug)
 
@@ -86,7 +80,7 @@ def main():
     writer.add_custom_scalars(layout)
 
     for epoch in range(args.epoch//10000):
-        if args.aug | args.original_augmentation:
+        if args.aug:
             # fetch meta_batchsz num of episode each time
             db = DataLoader(mini, args.task_num, shuffle=True, num_workers=1, pin_memory=True)
             for step, (x_spt, y_spt, x_qry, y_qry, x_spt_aug, x_qry_aug) in enumerate(db):

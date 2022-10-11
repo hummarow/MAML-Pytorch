@@ -7,6 +7,7 @@ import random
 import glob
 import sys
 import random
+import functools
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision.transforms import transforms
@@ -27,8 +28,8 @@ class MiniImagenet(Dataset):
     sets: conains n_way * k_shot for meta-train set, n_way * n_query for meta-test set.
     """
 
-    def __init__(self, root, mode, batchsz, n_way, k_shot, k_query, resize, startidx=0, aug=False):
-#    def __init__(self, root, mode, args):
+#    def __init__(self, root, mode, batchsz, n_way, k_shot, k_query, resize, startidx=0, aug=False):
+    def __init__(self, root, mode, batchsz, args, startidx=0):
         """
 
         :param root: root path of mini-imagenet
@@ -42,20 +43,24 @@ class MiniImagenet(Dataset):
         """
 
         self.batchsz = batchsz  # batch of set, not batch of imgs
-        self.n_way = n_way  # n-way
-        self.k_shot = k_shot  # k-shot
-        self.k_query = k_query  # for evaluation
+        self.n_way = args.n_way  # n-way
+        self.k_shot = args.k_spt  # k-shot
+        self.k_query = args.k_qry  # for evaluation
         self.setsz = self.n_way * self.k_shot  # num of samples per set
         self.querysz = self.n_way * self.k_query  # number of samples per set for evaluation
-        self.resize = resize  # resize to
+        self.resize = args.imgsz  # resize to
         self.startidx = startidx  # index label not from 0, but from startidx
-        self.aug = aug # Add augmentation or not
+        self.aug = args.aug # Add augmentation or not
+        self.original_augmentation = args.original_augmentation
         self.mode = mode
         print('shuffle DB :%s, b:%d, %d-way, %d-shot, %d-query, resize:%d' % (
-        mode, batchsz, n_way, k_shot, k_query, resize))
+        self.mode, self.batchsz, self.n_way, self.k_shot, self.k_query, self.resize))
 
-        self.transform = self.get_transform(False, mode)
-        self.transform_aug = self.get_transform(True, mode)
+        if self.original_augmentation:
+            self.transform =self.get_transform(mode, 0.3)
+        else:
+            self.transform = self.get_transform(mode, 0)
+        self.transform_aug = self.get_transform(mode, 1)
 
         self.path = os.path.join(root, 'images')  # image path
         images = glob.glob(root + '/*/*/*.jpg')
@@ -74,16 +79,16 @@ class MiniImagenet(Dataset):
 
         self.create_batch(self.batchsz)
 
-    def get_transform(self, aug, mode):
+    def get_transform(self, mode, prob):
         """
         Return the transform function with or without augmentation
         """
         if mode == 'train':
             transform = transforms.Compose([lambda x: np.asarray(Image.open(x).convert('RGB')),
-                                            lambda x: self.corrupt_c(x, aug),
+                                            lambda x: self.corrupt_c(x, prob),
                                             lambda x: Image.fromarray(x),
                                             transforms.Resize((self.resize, self.resize)),
-                                            lambda x: self.augmentation(x, aug),
+                                            lambda x: self.augmentation(x, prob),
                                             transforms.ToTensor(),
                                             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
                                             ])
@@ -96,7 +101,7 @@ class MiniImagenet(Dataset):
 
         return transform
 
-    def corrupt_c(self, img, aug, prob):
+    def corrupt_c(self, img, prob):
         """
         Return a imagenet-c corrupted image.
         (gaussian_noise, gaussian_blur)
@@ -107,7 +112,7 @@ class MiniImagenet(Dataset):
         img -- Numpy Array with size [224, 224, 3]
         aug -- bool, augmentation or not
         """
-        if aug == False:
+        if prob == 0:
             return img
         else:
             if random.random() <= prob:
@@ -119,13 +124,13 @@ class MiniImagenet(Dataset):
                     img = corrupt(img, corruption_name = cor)
             return img
 
-    def augmentation(self, img, aug, prob):
+    def augmentation(self, img, prob):
         """
         Return a [flipped, rotated] image.
         if no augmentation is required,
         return input image without any transformation.
         """
-        if aug == False:
+        if prob == 0:
             return img
         else:
             transform = transforms.Compose([
