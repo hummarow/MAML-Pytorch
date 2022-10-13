@@ -32,14 +32,13 @@ class Meta(nn.Module):
         self.update_step = args.update_step
         self.update_step_test = args.update_step_test
         self.reg = args.reg
-        self.ord = args.ord
         self.aug = args.aug
         self.qry_aug = args.qry_aug
         self.original_augmentation = args.original_augmentation
 
         self.net = Learner(config, args.imgc, args.imgsz)
         self.meta_optim = optim.Adam(self.net.parameters(), lr=self.meta_lr)
-        log_path = configs.get_path(args.reg, args.ord, args.log_dir, args.aug)
+        log_path = configs.get_path(args.log_dir, args.aug, args.reg)
         self.writer = SummaryWriter(log_path)
 
 
@@ -101,8 +100,8 @@ class Meta(nn.Module):
         phi = self.net.parameters()
 
         fast_weights = [phi] * task_num
+        fast_weights_aug = [phi] * task_num
         if self.aug and not self.original_augmentation:
-            fast_weights_aug = [phi] * task_num
             losses_q_aug = [0 for _ in range(self.update_step + 1)]  # losses_q[i] is the loss on step i
 
         for i in range(task_num):
@@ -195,40 +194,41 @@ class Meta(nn.Module):
 ####################################################################################
 # Weight Clustering
 ####################################################################################
-        weight_flat = []
-        for i in range(len(fast_weights)):
-            w = None
-            for fw in fast_weights[i]:
-                if not torch.is_tensor(w):
-                    w = torch.flatten(fw)
-                else:
-                    w = torch.cat([w, torch.flatten(fw)], dim=0)
-            weight_flat.append(w)
-
-        weight_flat = torch.stack(weight_flat, axis=1)
-        if self.original_augmentation:
-            fast_weights_aug = fast_weights
-        weight_flat_aug = []
-        for i in range(len(fast_weights_aug)):
-            w = None
-            for fw in fast_weights_aug[i]:
-                if not torch.is_tensor(w):
-                    w = torch.flatten(fw)
-                else:
-                    w = torch.cat([w, torch.flatten(fw)], dim=0)
-            weight_flat_aug.append(w)
-        weight_flat_aug = torch.stack(weight_flat_aug, axis=1)
-#        diff = weight_flat - weight_flat_aug
-        st = torch.stack([weight_flat, weight_flat_aug])
-        diff = torch.norm(st, p='fro', dim=0)
-        diff = torch.norm(diff, p='fro', dim=0)
-
-        norm = torch.mean(diff)
-
-        self.writer.add_scalar("Distance", norm, t)
-        self.writer.add_scalar("loss", loss_q, t)
-
-        loss_q += self.reg * norm
+        if self.aug or self.original_augmentation:
+            weight_flat = []
+            for i in range(len(fast_weights)):
+                w = None
+                for fw in fast_weights[i]:
+                    if not torch.is_tensor(w):
+                        w = torch.flatten(fw)
+                    else:
+                        w = torch.cat([w, torch.flatten(fw)], dim=0)
+                weight_flat.append(w)
+    
+            weight_flat = torch.stack(weight_flat, axis=1)
+            if self.original_augmentation:
+                fast_weights_aug = fast_weights
+            weight_flat_aug = []
+            for i in range(len(fast_weights_aug)):
+                w = None
+                for fw in fast_weights_aug[i]:
+                    if not torch.is_tensor(w):
+                        w = torch.flatten(fw)
+                    else:
+                        w = torch.cat([w, torch.flatten(fw)], dim=0)
+                weight_flat_aug.append(w)
+            weight_flat_aug = torch.stack(weight_flat_aug, axis=1)
+    #        diff = weight_flat - weight_flat_aug
+            st = torch.stack([weight_flat, weight_flat_aug])
+            diff = torch.norm(st, p='fro', dim=0)
+            diff = torch.norm(diff, p='fro', dim=0)
+    
+            norm = torch.mean(diff)
+    
+            self.writer.add_scalar("Distance", norm, t)
+            self.writer.add_scalar("loss", loss_q, t)
+    
+            loss_q += self.reg * norm
 
 ###############################################################################
 # End Weight Clustering

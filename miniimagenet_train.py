@@ -74,7 +74,7 @@ def main():
     mini = MiniImagenet(imagenet_path, mode='train', batchsz=10000, args=args)
     mini_test = MiniImagenet(imagenet_path, mode='test', batchsz=100, args=args)
 
-    log_path = configs.get_path(args.reg, args.ord, args.log_dir, args.aug)
+    log_path = configs.get_path(args.log_dir, args.aug, args.reg)
 
     writer = SummaryWriter(log_path)
     writer.add_custom_scalars(layout)
@@ -203,18 +203,24 @@ if __name__ == '__main__':
     argparser.add_argument('--update_lr', type=float, help='task-level inner update learning rate', default=0.01)
     argparser.add_argument('--update_step', type=int, help='task-level inner update steps', default=5)
     argparser.add_argument('--update_step_test', type=int, help='update steps for finetunning', default=10)
+
     argparser.add_argument('--reg', type=float, help='coefficient for regularizer', default=1.0)
     argparser.add_argument('--log_dir', type=str, help='log directory for tensorboard', default='')
-    argparser.add_argument('--ord', type=int, help='order of norms among fine-tuned weights', default=2)
     argparser.add_argument('--aug', action='store_true',
                            help='add augmentation and measure weight distance between original data and augmented data',
                            default=False)
-    argparser.add_argument('--test', type=str, help='use original test set, or augmented set, or both', default='original')
-    argparser.add_argument('--qry_aug', action='store_true', help='use augmented query set when meta-updating parameters', default=False)
-    argparser.add_argument('--original_augmentation', action='store_true', help='...', default=False)
+    argparser.add_argument('--test',
+                           type=str,
+                           help='use original test set, or augmented set, or both',
+                           default='original')
+    argparser.add_argument('--qry_aug',
+                           action='store_true',
+                           help='use augmented query set when meta-updating parameters',
+                           default=False)
+    argparser.add_argument('--original_augmentation',
+                           action='store_true',
+                           help='...',
+                           default=False)
 
     args = argparser.parse_args()
-    if args.log_dir != '':
-        args.log_dir = '_' + args.log_dir
-
     main()

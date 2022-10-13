@@ -8,11 +8,23 @@ import glob
 import sys
 import random
 import functools
+import typing
+import torchvision.transforms.functional as TF
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision.transforms import transforms
 from copy import deepcopy
 from imagenet_c import corrupt
+
+
+class Rotate:
+    def __init__(self, angles: list):
+        self.angles = angles
+
+    def __call__(self, img):
+        angle = random.choice(self.angles)
+        return TF.rotate(img, angle)
+
 
 
 class MiniImagenet(Dataset):
@@ -56,11 +68,11 @@ class MiniImagenet(Dataset):
         print('shuffle DB :%s, b:%d, %d-way, %d-shot, %d-query, resize:%d' % (
         self.mode, self.batchsz, self.n_way, self.k_shot, self.k_query, self.resize))
 
+        self.transform_aug = self.get_transform(mode, True)
         if self.original_augmentation:
-            self.transform =self.get_transform(mode, 0.3)
+            self.transform = self.transform_aug
         else:
-            self.transform = self.get_transform(mode, 0)
-        self.transform_aug = self.get_transform(mode, 1)
+            self.transform = self.get_transform(mode, False)
 
         self.path = os.path.join(root, 'images')  # image path
         images = glob.glob(root + '/*/*/*.jpg')
@@ -79,16 +91,16 @@ class MiniImagenet(Dataset):
 
         self.create_batch(self.batchsz)
 
-    def get_transform(self, mode, prob):
+    def get_transform(self, mode, aug):
         """
         Return the transform function with or without augmentation
         """
         if mode == 'train':
             transform = transforms.Compose([lambda x: np.asarray(Image.open(x).convert('RGB')),
-                                            lambda x: self.corrupt_c(x, prob),
+                                            lambda x: self.corrupt_c(x, aug),
                                             lambda x: Image.fromarray(x),
                                             transforms.Resize((self.resize, self.resize)),
-                                            lambda x: self.augmentation(x, prob),
+                                            lambda x: self.augmentation(x, aug),
                                             transforms.ToTensor(),
                                             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
                                             ])
@@ -101,7 +113,7 @@ class MiniImagenet(Dataset):
 
         return transform
 
-    def corrupt_c(self, img, prob):
+    def corrupt_c(self, img, aug):
         """
         Return a imagenet-c corrupted image.
         (gaussian_noise, gaussian_blur)
@@ -112,31 +124,37 @@ class MiniImagenet(Dataset):
         img -- Numpy Array with size [224, 224, 3]
         aug -- bool, augmentation or not
         """
-        if prob == 0:
+# Not Using imagenet-c corruption
+        aug = False
+        if not aug:
             return img
         else:
-            if random.random() <= prob:
-                corruption_names = [
-                                    'gaussian_noise',
-                                    'gaussian_blur',
-                                   ]
-                for cor in corruption_names:
+            corruption_names = [
+                                'gaussian_noise',
+                                'gaussian_blur',
+                               ]
+            for cor in corruption_names:
+                if random.random() <= prob:
                     img = corrupt(img, corruption_name = cor)
             return img
 
-    def augmentation(self, img, prob):
+    def augmentation(self, img, aug):
         """
         Return a [flipped, rotated] image.
         if no augmentation is required,
         return input image without any transformation.
         """
-        if prob == 0:
+        if not aug:
             return img
         else:
-            transform = transforms.Compose([
-                                            transforms.RandomHorizontalFlip(p=prob),
-                                            transforms.RandomRotation((0,70)),
-                                            ])
+#            transform = transforms.Compose([
+#                                            transforms.RandomHorizontalFlip(p=prob),
+##                                            transforms.RandomRotation((0,70)),
+#                                            ])
+            transform = transforms.Compose([random.choice([
+                                            transforms.RandomHorizontalFlip(p=0.5),
+                                            Rotate(angles=[-90, 0, 90, 180])
+                                            ])])
             return transform(img)
 
 
