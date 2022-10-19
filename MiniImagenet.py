@@ -58,13 +58,15 @@ class MiniImagenet(Dataset):
         self.n_way = args.n_way  # n-way
         self.k_shot = args.k_spt  # k-shot
         self.k_query = args.k_qry  # for evaluation
+        self.mode = mode
+        if self.mode == 'val' or self.mode == 'test':
+            self.k_query = 1
         self.setsz = self.n_way * self.k_shot  # num of samples per set
         self.querysz = self.n_way * self.k_query  # number of samples per set for evaluation
         self.resize = args.imgsz  # resize to
         self.startidx = startidx  # index label not from 0, but from startidx
         self.aug = args.aug # Add augmentation or not
         self.original_augmentation = args.original_augmentation
-        self.mode = mode
         print('shuffle DB :%s, b:%d, %d-way, %d-shot, %d-query, resize:%d' % (
         self.mode, self.batchsz, self.n_way, self.k_shot, self.k_query, self.resize))
 
@@ -152,7 +154,7 @@ class MiniImagenet(Dataset):
 ##                                            transforms.RandomRotation((0,70)),
 #                                            ])
             transform = transforms.Compose([random.choice([
-                                            transforms.RandomHorizontalFlip(p=0.5),
+#                                            transforms.RandomHorizontalFlip(p=0.5),
                                             Rotate(angles=[-90, 0, 90, 180])
                                             ])])
             return transform(img)
