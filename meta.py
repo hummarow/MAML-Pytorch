@@ -26,8 +26,8 @@ class Meta(nn.Module):
         self.update_lr = args.update_lr
         self.meta_lr = args.meta_lr
         self.n_way = args.n_way
-        self.k_spt = args.k_spt
-        self.k_qry = args.k_qry
+#        self.k_spt = args.k_spt
+#        self.k_qry = args.k_qry
         self.task_num = args.task_num
         self.update_step = args.update_step
         self.update_step_test = args.update_step_test

@@ -49,7 +49,7 @@ class MiniImagenet(Dataset):
         :param batchsz: batch size of sets, not batch of imgs
         :param n_way:
         :param k_shot:
-        :param k_query: num of qeruy imgs per class
+        :param k_query: num of quy imgs per class
         :param resize: resize to
         :param startidx: start to index label from startidx
         """
@@ -201,8 +201,7 @@ class MiniImagenet(Dataset):
                 np.random.shuffle(selected_imgs_idx)
                 indexDtrain = np.array(selected_imgs_idx[:self.k_shot])  # idx for Dtrain
                 indexDtest = np.array(selected_imgs_idx[self.k_shot:])  # idx for Dtest
-                support_x.append(
-                    np.array(self.data[cls])[indexDtrain].tolist())  # get all images filename for current Dtrain
+                support_x.append(np.array(self.data[cls])[indexDtrain].tolist())  # get all images filename for current Dtrain
                 query_x.append(np.array(self.data[cls])[indexDtest].tolist())
 
             # shuffle the correponding relation between support set and query set

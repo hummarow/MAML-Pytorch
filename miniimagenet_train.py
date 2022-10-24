@@ -7,12 +7,13 @@ import tensorboard
 import matplotlib.pyplot as plt
 import os
 import configs
-
+import typing
 from MiniImagenet import MiniImagenet 
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim import lr_scheduler
 from collections import defaultdict
+from tqdm import tqdm
 from meta import Meta
 
 
@@ -33,7 +34,44 @@ def mean_confidence_interval(accs, confidence=0.95):
     return m, h
 
 
-def main():
+def main(**kwargs):
+    """
+    return list of validation loss
+    """
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument('--epoch', type=int, help='epoch number', default=60000)
+    argparser.add_argument('--n_way', type=int, help='n way', default=5)
+    argparser.add_argument('--k_spt', type=int, help='k shot for support set', default=1)
+    argparser.add_argument('--k_qry', type=int, help='k shot for query set', default=15)
+    argparser.add_argument('--imgsz', type=int, help='imgsz', default=84)
+    argparser.add_argument('--imgc', type=int, help='imgc', default=3)
+    argparser.add_argument('--task_num', type=int, help='meta batch size, namely task num', default=4)
+    argparser.add_argument('--meta_lr', type=float, help='meta-level outer learning rate', default=1e-3)
+    argparser.add_argument('--update_lr', type=float, help='task-level inner update learning rate', default=0.01)
+    argparser.add_argument('--update_step', type=int, help='task-level inner update steps', default=5)
+    argparser.add_argument('--update_step_test', type=int, help='update steps for finetunning', default=10)
+
+    argparser.add_argument('--reg', type=float, help='coefficient for regularizer', default=1.0)
+    argparser.add_argument('--log_dir', type=str, help='log directory for tensorboard', default='')
+    argparser.add_argument('--aug', action='store_true',
+                           help='add augmentation and measure weight distance between original data and augmented data',
+                           default=False)
+    argparser.add_argument('--test',
+                           type=str,
+                           help='use original test set, or augmented set, or both',
+                           default='original')
+    argparser.add_argument('--qry_aug',
+                           action='store_true',
+                           help='use augmented query set when meta-updating parameters',
+                           default=False)
+    argparser.add_argument('--original_augmentation',
+                           action='store_true',
+                           help='...',
+                           default=False)
+
+    args = argparser.parse_args()
+    for i, k in kwargs.items():
+        vars(args)[i] = k
 
     torch.manual_seed(222)
     torch.cuda.manual_seed_all(222)
@@ -67,11 +105,12 @@ def main():
 
     tmp = filter(lambda x: x.requires_grad, maml.parameters())
     num = sum(map(lambda x: np.prod(x.shape), tmp))
-    print(maml)
-    print('Total trainable tensors:', num)
+#    print(maml)
+#    print('Total trainable tensors:', num)
 
     # batchsz here means total episode number
     mini = MiniImagenet(imagenet_path, mode='train', batchsz=10000, args=args)
+    mini_val = MiniImagenet(imagenet_path, mode='val', batchsz=100, args=args)
     mini_test = MiniImagenet(imagenet_path, mode='test', batchsz=100, args=args)
 
     log_path = configs.get_path(args.log_dir, args.aug, args.reg)
@@ -79,7 +118,9 @@ def main():
     writer = SummaryWriter(log_path)
     writer.add_custom_scalars(layout)
 
-    for epoch in range(args.epoch//10000):
+    val_accs = []
+
+    for epoch in tqdm(range(args.epoch//10000)):
         if args.aug:
             # fetch meta_batchsz num of episode each time
             db = DataLoader(mini, args.task_num, shuffle=True, num_workers=1, pin_memory=True)
@@ -88,17 +129,17 @@ def main():
                 x_spt_aug, x_qry_aug = x_spt_aug.to(device), x_qry_aug.to(device)
                 accs = maml(x_spt, y_spt, x_qry, y_qry, step+len(db)*epoch, spt_aug=x_spt_aug, qry_aug=x_qry_aug)
                 if step % 30 == 0:
-                    print('step:', step, '\ttraining acc:', accs)
+#                    print('step:', step, '\ttraining acc:', accs)
                     writer.add_scalar('Accuracy/Train',
                                       accs[-1],
                                       step + epoch*len(db))
 
                 if step % 500 == 0:  # evaluation
                     if args.test in ['original', 'both']:
-                        db_test = DataLoader(mini_test, 1, shuffle=True, num_workers=1, pin_memory=True)
+                        db_val = DataLoader(mini_val, 1, shuffle=True, num_workers=1, pin_memory=True)
                         accs_all_test = []
 
-                        for x_spt, y_spt, x_qry, y_qry in db_test:
+                        for x_spt, y_spt, x_qry, y_qry in db_val:
                             x_spt, y_spt, x_qry, y_qry = x_spt.squeeze(0).to(device), y_spt.squeeze(0).to(device), \
                                                          x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
 
@@ -107,33 +148,14 @@ def main():
 
                         # [b, update_step+1]
                         accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
-                        print('Test acc:', accs)
+#                        print('Test acc:', accs)
                         writer.add_scalar('Accuracy',
                                           accs[-1],
                                           step + epoch*len(db))
                         writer.add_scalar('Accuracy/Test',
                                           accs[-1],
                                           step + epoch*len(db))
-#                    if args.test in ['aug', 'both']:
-#                        db_test = DataLoader(mini_test_aug, 1, shuffle=True, num_workers=1, pin_memory=True)
-#                        accs_all_test = []
-#
-#                        for x_spt, y_spt, x_qry, y_qry in db_test:
-#                            x_spt, y_spt, x_qry, y_qry = x_spt.squeeze(0).to(device), y_spt.squeeze(0).to(device), \
-#                                                         x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
-#
-#                            accs = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
-#                            accs_all_test.append(accs)
-#
-#                        # [b, update_step+1]
-#                        accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
-#                        print('Test acc:', accs)
-#                        writer.add_scalar('Accuracy',
-#                                          accs[-1],
-#                                          step + epoch*len(db))
-#                        writer.add_scalar('Accuracy/AugTest',
-#                                          accs[-1],
-#                                          step + epoch*len(db))
+                        val_accs.append(accs[-1])
 
         else:
             db = DataLoader(mini, args.task_num, shuffle=True, num_workers=1, pin_memory=True)
@@ -144,17 +166,17 @@ def main():
                 accs = maml(x_spt, y_spt, x_qry, y_qry, step+len(db)*epoch)
 
                 if step % 30 == 0:
-                    print('step:', step, '\ttraining acc:', accs)
+#                    print('step:', step, '\ttraining acc:', accs)
                     writer.add_scalar('Accuracy/Train',
                                       accs[-1],
                                       step + epoch*len(db))
 
                 if step % 500 == 0:  # evaluation
                     if args.test in ['original', 'both']:
-                        db_test = DataLoader(mini_test, 1, shuffle=True, num_workers=1, pin_memory=True)
+                        db_val = DataLoader(mini_val, 1, shuffle=True, num_workers=1, pin_memory=True)
                         accs_all_test = []
 
-                        for x_spt, y_spt, x_qry, y_qry in db_test:
+                        for x_spt, y_spt, x_qry, y_qry in db_val:
                             x_spt, y_spt, x_qry, y_qry = x_spt.squeeze(0).to(device), y_spt.squeeze(0).to(device), \
                                                          x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
 
@@ -163,64 +185,30 @@ def main():
 
                         # [b, update_step+1]
                         accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
-                        print('Test acc:', accs)
+#                        print('Test acc:', accs)
                         writer.add_scalar('Accuracy',
                                           accs[-1],
                                           step + epoch*len(db))
                         writer.add_scalar('Accuracy/Test',
                                           accs[-1],
                                           step + epoch*len(db))
-# mini_test_aug deprecated
-#                    if args.test in ['aug', 'both']:
-#                        db_test = DataLoader(mini_test_aug, 1, shuffle=True, num_workers=1, pin_memory=True)
-#                        accs_all_test = []
-#
-#                        for x_spt, y_spt, x_qry, y_qry in db_test:
-#                            x_spt, y_spt, x_qry, y_qry = x_spt.squeeze(0).to(device), y_spt.squeeze(0).to(device), \
-#                                                         x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
-#
-#                            accs = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
-#                            accs_all_test.append(accs)
-#
-#                        # [b, update_step+1]
-#                        accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
-#                        print('Test acc:', accs)
-#                        writer.add_scalar('Accuracy/AugTest',
-#                                          accs[-1],
-#                                          step + epoch*len(db))
+                        val_accs.append(accs[-1])
+
+        db_test = DataLoader(mini_test, 1, shuffle=True, num_workers=1, pin_memory=True)
+        for x_spt, y_spt, x_qry, y_qry in db_test:
+            x_spt, y_spt, x_qry, y_qry = x_spt.squeeze(0).to(device), y_spt.squeeze(0).to(device), \
+                                         x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
+    
+            accs = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
+            accs_all_test.append(accs)
+    
+        # [b, update_step+1]
+        accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
+        print("Test Score: ", accs[-1])
+        print("Val Score: ", val_accs[-1])
+    
+    return val_accs
 
 
 if __name__ == '__main__':
-    argparser = argparse.ArgumentParser()
-    argparser.add_argument('--epoch', type=int, help='epoch number', default=60000)
-    argparser.add_argument('--n_way', type=int, help='n way', default=5)
-    argparser.add_argument('--k_spt', type=int, help='k shot for support set', default=1)
-    argparser.add_argument('--k_qry', type=int, help='k shot for query set', default=15)
-    argparser.add_argument('--imgsz', type=int, help='imgsz', default=84)
-    argparser.add_argument('--imgc', type=int, help='imgc', default=3)
-    argparser.add_argument('--task_num', type=int, help='meta batch size, namely task num', default=4)
-    argparser.add_argument('--meta_lr', type=float, help='meta-level outer learning rate', default=1e-3)
-    argparser.add_argument('--update_lr', type=float, help='task-level inner update learning rate', default=0.01)
-    argparser.add_argument('--update_step', type=int, help='task-level inner update steps', default=5)
-    argparser.add_argument('--update_step_test', type=int, help='update steps for finetunning', default=10)
-
-    argparser.add_argument('--reg', type=float, help='coefficient for regularizer', default=1.0)
-    argparser.add_argument('--log_dir', type=str, help='log directory for tensorboard', default='')
-    argparser.add_argument('--aug', action='store_true',
-                           help='add augmentation and measure weight distance between original data and augmented data',
-                           default=False)
-    argparser.add_argument('--test',
-                           type=str,
-                           help='use original test set, or augmented set, or both',
-                           default='original')
-    argparser.add_argument('--qry_aug',
-                           action='store_true',
-                           help='use augmented query set when meta-updating parameters',
-                           default=False)
-    argparser.add_argument('--original_augmentation',
-                           action='store_true',
-                           help='...',
-                           default=False)
-
-    args = argparser.parse_args()
     main()
