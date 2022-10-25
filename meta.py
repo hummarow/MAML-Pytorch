@@ -90,7 +90,6 @@ class Meta(nn.Module):
             x_qry = torch.cat([x_qry, qry_aug], dim=1)
             y_qry = torch.cat([y_qry, y_qry], dim=1)
 
-
         task_num, setsz, c_, h, w = x_spt.size()
         querysz = x_qry.size(1)
 
@@ -105,6 +104,7 @@ class Meta(nn.Module):
             losses_q_aug = [0 for _ in range(self.update_step + 1)]  # losses_q[i] is the loss on step i
 
         for i in range(task_num):
+# model with augmented data
             if self.aug and not self.original_augmentation:
                 # Augmented data
                 logits = self.net(spt_aug[i], vars=None, bn_training=True)
@@ -139,7 +139,7 @@ class Meta(nn.Module):
                     loss_q = F.cross_entropy(logits_q, y_qry_orig[i])
                     losses_q_aug[k + 1] += loss_q
 
-
+# model with original data
             # 1. run the i-th task and compute loss for k=0
             # self.net = Learner()
             logits = self.net(x_spt[i], vars=None, bn_training=True)
@@ -189,11 +189,14 @@ class Meta(nn.Module):
                     corrects[k + 1] = corrects[k + 1] + correct
         # end of all tasks
         # sum over all losses on query set across all tasks
+        loss_q_aug = losses_q_aug[-1] / task_num
         loss_q = losses_q[-1] / task_num
+# Total Loss = Loss + Loss(aug) + Regularizer
+        loss_q += loss_q_aug * 0.001
 
-####################################################################################
+#########################################################################
 # Weight Clustering
-####################################################################################
+#########################################################################
         if self.aug or self.original_augmentation:
             weight_flat = []
             for i in range(len(fast_weights)):
@@ -204,7 +207,7 @@ class Meta(nn.Module):
                     else:
                         w = torch.cat([w, torch.flatten(fw)], dim=0)
                 weight_flat.append(w)
-    
+
             weight_flat = torch.stack(weight_flat, axis=1)
             if self.original_augmentation:
                 fast_weights_aug = fast_weights
@@ -222,12 +225,12 @@ class Meta(nn.Module):
             st = torch.stack([weight_flat, weight_flat_aug])
             diff = torch.norm(st, p='fro', dim=0)
             diff = torch.norm(diff, p='fro', dim=0)
-    
+
             norm = torch.mean(diff)
-    
+
             self.writer.add_scalar("Distance", norm, t)
             self.writer.add_scalar("loss", loss_q, t)
-    
+
             loss_q += self.reg * norm
 
 ###############################################################################
