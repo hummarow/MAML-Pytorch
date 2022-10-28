@@ -4,7 +4,6 @@ from    torch.nn import functional as F
 import  numpy as np
 
 
-
 class Learner(nn.Module):
     """
 
