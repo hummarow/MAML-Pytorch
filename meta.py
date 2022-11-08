@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import os
 import configs
+import typing
 from torch import nn
 from torch import optim
 from torch.nn import functional as F
@@ -16,6 +17,7 @@ class Meta(nn.Module):
     """
     Meta Learner
     """
+
     def __init__(self, args, config):
         """
 
@@ -26,21 +28,26 @@ class Meta(nn.Module):
         self.update_lr = args.update_lr
         self.meta_lr = args.meta_lr
         self.n_way = args.n_way
-#        self.k_spt = args.k_spt
-#        self.k_qry = args.k_qry
         self.task_num = args.task_num
         self.update_step = args.update_step
         self.update_step_test = args.update_step_test
         self.reg = args.reg
         self.aug = args.aug
         self.qry_aug = args.qry_aug
-        self.original_augmentation = args.original_augmentation
+        self.traditional_augmentation = args.traditional_augmentation
+        self.need_aug = args.need_aug
 
         self.net = Learner(config, args.imgc, args.imgsz)
         self.meta_optim = optim.Adam(self.net.parameters(), lr=self.meta_lr)
-        log_path = configs.get_path(args.log_dir, args.aug, args.reg)
+        log_path = configs.get_path(args.logdir, args.aug, args.reg)
         self.writer = SummaryWriter(log_path)
 
+    # def get_checkpoint(self):
+    #     checkpoint = {
+    #         "model_state_dict": self.net.state_dict(),
+    #         "optimizer_state_dict": self.meta_optim.state_dict(),
+    #     }
+    #     return checkpoint
 
     def clip_grad_by_norm_(self, grad, max_norm):
         """
@@ -56,16 +63,48 @@ class Meta(nn.Module):
             param_norm = g.data.norm(2)
             total_norm += param_norm.item() ** 2
             counter += 1
-        total_norm = total_norm ** (1. / 2)
+        total_norm = total_norm ** (1.0 / 2)
 
         clip_coef = max_norm / (total_norm + 1e-6)
         if clip_coef < 1:
             for g in grad:
                 g.data.mul_(clip_coef)
 
-        return total_norm/counter
+        return total_norm / counter
 
-    def forward(self, x_spt, y_spt, x_qry, y_qry, t, spt_aug=None, qry_aug=None):
+    def weight_clustering(self, weight_1, weight_2):
+        # Flatten weight_1
+        weight_flat = []
+        for i in range(len(weight_1)):
+            w = None
+            for fw in weight_1[i]:
+                if not torch.is_tensor(w):
+                    w = torch.flatten(fw)
+                else:
+                    w = torch.cat([w, torch.flatten(fw)], dim=0)
+            weight_flat.append(w)
+        weight_flat = torch.stack(weight_flat, axis=1)
+        # Flatten weight_2
+        weight_flat_2 = []
+        for i in range(len(weight_2)):
+            w = None
+            for fw in weight_2[i]:
+                if not torch.is_tensor(w):
+                    w = torch.flatten(fw)
+                else:
+                    w = torch.cat([w, torch.flatten(fw)], dim=0)
+            weight_flat_2.append(w)
+        weight_flat_2 = torch.stack(weight_flat_2, axis=1)
+
+        #        diff = weight_flat - weight_flat_2
+        st = torch.stack([weight_flat, weight_flat_2])
+        diff = torch.norm(st, p="fro", dim=0)
+        diff = torch.norm(diff, p="fro", dim=0)
+
+        norm = torch.mean(diff)
+        return norm
+
+    def forward(self, x_spt, y_spt, x_qry, y_qry, t, spt_aug=None, qry_aug=None) -> float:
         """
         :param x_spt:   [b, setsz, c_, h, w]
         :param y_spt:   [b, setsz]
@@ -77,180 +116,121 @@ class Meta(nn.Module):
         3 conditions of forward function
         1. aug flag is set, and augmented support set and query set are given.
            The learning procedure is done with original dataset,
-           and the distances between original dataset and augmented dataset are used as regularizer.
+           and the distances between parameters from original dataset and augmented dataset are used as regularizer.
+        2. traditional_augmentation flag is set, and augmented support set and query set are given.
+           The learning procedure is done with augmented dataset,
+           and the distances are calculated.
         2. aug flag is not set.
            The learning procedure is done without augmentation.
-        3. original_augmentation flag is set, and augmented support set and query set are NOT given.
-           The learning procedure is done with augmented dataset.
         """
-        assert (self.aug and torch.is_tensor(spt_aug) and torch.is_tensor(qry_aug)) or (not self.aug) or (self.original_augmentation and not (torch.is_tensor(spt_aug) or torch.is_tensor(qry_aug)))
+        assert (
+            self.need_aug  # Needs augmentation.
+            and torch.is_tensor(spt_aug)  # Augmented data are given.
+            and torch.is_tensor(qry_aug)
+        ) or (not self.aug)
 
         x_qry_orig, y_qry_orig = x_qry, y_qry
         if self.qry_aug:
             x_qry = torch.cat([x_qry, qry_aug], dim=1)
             y_qry = torch.cat([y_qry, y_qry], dim=1)
 
-        task_num, setsz, c_, h, w = x_spt.size()
+        task_num = x_spt.size()[0]
         querysz = x_qry.size(1)
 
-        losses_q = [0 for _ in range(self.update_step + 1)]  # losses_q[i] is the loss on step i
-        corrects = [0 for _ in range(self.update_step + 1)]
+        loss_q = 0
+        loss_q_aug = 0
+        num_corrects = 0
 
         phi = self.net.parameters()
 
-        fast_weights = [phi] * task_num
-        fast_weights_aug = [phi] * task_num
-        if self.aug and not self.original_augmentation:
-            losses_q_aug = [0 for _ in range(self.update_step + 1)]  # losses_q[i] is the loss on step i
+        finetuned_parameter = [phi] * task_num
+        finetuned_parameter_aug = [phi] * task_num
 
         for i in range(task_num):
-# model with augmented data
-            if self.aug and not self.original_augmentation:
-                # Augmented data
-                logits = self.net(spt_aug[i], vars=None, bn_training=True)
+            # model with original data
+            for k in range(self.update_step):
+                # Update parameter with support data
+                logits = self.net(x_spt[i], finetuned_parameter[i], bn_training=True)
                 loss = F.cross_entropy(logits, y_spt[i])
-                grad = torch.autograd.grad(loss, self.net.parameters())
-                fast_weights_aug[i] = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, self.net.parameters())))
+                grad = torch.autograd.grad(
+                    loss,
+                    finetuned_parameter[i],
+                    create_graph=True,
+                    retain_graph=True,
+                )
+                finetuned_parameter[i] = list(
+                    map(
+                        lambda p: p[1] - self.update_lr * p[0],
+                        zip(grad, finetuned_parameter[i]),
+                    )
+                )
+            # Calculate loss with query data
+            logits_q = self.net(x_qry[i], finetuned_parameter[i], bn_training=True)
+            _task_loss = F.cross_entropy(logits_q, y_qry[i])
+            # hessian = torch.autograd.grad(_task_loss, y_qry[i])  # TODO: check 'retain_graph'
+            loss_q += _task_loss  # Sum of losses of all tasks
+            with torch.no_grad():
+                pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
+                num_corrects += torch.eq(pred_q, y_qry[i]).sum().item()  # convert to numpy
 
-                with torch.no_grad():
-                    logits_q = self.net(qry_aug[i], self.net.parameters(), bn_training=True)
-                    loss_q = F.cross_entropy(logits_q, y_qry_orig[i])
-                    losses_q_aug[0] += loss_q
-
-                # this is the loss and accuracy after the first update
-#                with torch.no_grad():
-                    # [setsz, nway]
-                    logits_q = self.net(qry_aug[i], fast_weights_aug[i], bn_training=True)
-                    loss_q = F.cross_entropy(logits_q, y_qry_orig[i])
-                    losses_q_aug[1] += loss_q
-                    # [setsz]
-
-                for k in range(1, self.update_step):
-                    # 1. run the i-th task and compute loss for k=1~K-1
-                    logits = self.net(spt_aug[i], fast_weights_aug[i], bn_training=True)
+            # model with augmented data
+            if self.need_aug:
+                for k in range(self.update_step):
+                    # Update parameter with support data
+                    logits = self.net(
+                        spt_aug[i],
+                        finetuned_parameter_aug[i],
+                        bn_training=True,
+                    )
                     loss = F.cross_entropy(logits, y_spt[i])
-                    # 2. compute grad on theta_pi
-                    grad = torch.autograd.grad(loss, fast_weights_aug[i], create_graph=True, retain_graph=True)
-                    # 3. theta_pi = theta_pi - train_lr * grad
-                    fast_weights_aug[i] = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, fast_weights_aug[i])))
+                    grad = torch.autograd.grad(
+                        loss,
+                        finetuned_parameter_aug[i],
+                        create_graph=True,
+                        retain_graph=True,
+                    )
+                    finetuned_parameter_aug[i] = list(
+                        map(
+                            lambda p: p[1] - self.update_lr * p[0],
+                            zip(grad, finetuned_parameter_aug[i]),
+                        )
+                    )
+                # Calculate loss with query data
+                # with no grad
+                logits_q = self.net(qry_aug[i], finetuned_parameter_aug[i], bn_training=True)
+                loss_q_aug += F.cross_entropy(logits_q, y_qry_orig[i])
 
-                    logits_q = self.net(qry_aug[i], fast_weights_aug[i], bn_training=True)
-                    # loss_q will be overwritten and just keep the loss_q on last update step.
-                    loss_q = F.cross_entropy(logits_q, y_qry_orig[i])
-                    losses_q_aug[k + 1] += loss_q
+        loss_q = torch.div(loss_q, task_num)
+        self.writer.add_scalar("loss/original", loss_q, t)
+        loss_q_aug = torch.div(loss_q_aug, task_num)
+        self.writer.add_scalar("loss/augmented", loss_q_aug, t)
+        self.writer.add_scalar("loss_difference", abs(loss_q - loss_q_aug), t)
+        # Total Loss = Loss + Loss(aug) + Regularizer
+        loss_q += loss_q_aug
 
-# model with original data
-            # 1. run the i-th task and compute loss for k=0
-            # self.net = Learner()
-            logits = self.net(x_spt[i], vars=None, bn_training=True)
-            loss = F.cross_entropy(logits, y_spt[i])
-            grad = torch.autograd.grad(loss, self.net.parameters(), retain_graph=True, create_graph=True)
-            fast_weights[i] = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, self.net.parameters())))
+        # Overwrite loss with the one calculated from augmented dataset if trad. augmentation is set.
+        if self.traditional_augmentation:
+            loss_q = loss_q_aug
 
-            # this is the loss and accuracy before first update
-            with torch.no_grad():
-                # [setsz, nway]
-                logits_q = self.net(x_qry[i], self.net.parameters(), bn_training=True)
-                loss_q = F.cross_entropy(logits_q, y_qry[i])
-                losses_q[0] += loss_q
+        # Weight Clustering
+        if self.need_aug:
+            norm = self.weight_clustering(finetuned_parameter, finetuned_parameter_aug)
+        else:
+            norm = 0
 
-                pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
-                correct = torch.eq(pred_q, y_qry[i]).sum().item()
-                corrects[0] = corrects[0] + correct
-
-            # this is the loss and accuracy after the first update
-            with torch.no_grad():
-                # [setsz, nway]
-                logits_q = self.net(x_qry[i], fast_weights[i], bn_training=True)
-                loss_q = F.cross_entropy(logits_q, y_qry[i])
-                losses_q[1] += loss_q
-                # [setsz]
-                pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
-                correct = torch.eq(pred_q, y_qry[i]).sum().item()
-                corrects[1] = corrects[1] + correct
-
-            for k in range(1, self.update_step):
-                # 1. run the i-th task and compute loss for k=1~K-1
-                logits = self.net(x_spt[i], fast_weights[i], bn_training=True)
-                loss = F.cross_entropy(logits, y_spt[i])
-                # 2. compute grad on theta_pi
-                grad = torch.autograd.grad(loss, fast_weights[i], create_graph=True, retain_graph=True)
-                # 3. theta_pi = theta_pi - train_lr * grad
-                fast_weights[i] = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, fast_weights[i])))
-
-                logits_q = self.net(x_qry[i], fast_weights[i], bn_training=True)
-                # loss_q will be overwritten and just keep the loss_q on last update step.
-                loss_q = F.cross_entropy(logits_q, y_qry[i])
-                losses_q[k + 1] += loss_q
-
-                with torch.no_grad():
-                    pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
-                    correct = torch.eq(pred_q, y_qry[i]).sum().item()  # convert to numpy
-                    corrects[k + 1] = corrects[k + 1] + correct
-        # end of all tasks
-        # sum over all losses on query set across all tasks
-        loss_q_aug = losses_q_aug[-1] / task_num
-        loss_q = losses_q[-1] / task_num
-# Total Loss = Loss + Loss(aug) + Regularizer
-        loss_q += loss_q_aug * 0.001
-
-#########################################################################
-# Weight Clustering
-#########################################################################
-        if self.aug or self.original_augmentation:
-            weight_flat = []
-            for i in range(len(fast_weights)):
-                w = None
-                for fw in fast_weights[i]:
-                    if not torch.is_tensor(w):
-                        w = torch.flatten(fw)
-                    else:
-                        w = torch.cat([w, torch.flatten(fw)], dim=0)
-                weight_flat.append(w)
-
-            weight_flat = torch.stack(weight_flat, axis=1)
-            if self.original_augmentation:
-                fast_weights_aug = fast_weights
-            weight_flat_aug = []
-            for i in range(len(fast_weights_aug)):
-                w = None
-                for fw in fast_weights_aug[i]:
-                    if not torch.is_tensor(w):
-                        w = torch.flatten(fw)
-                    else:
-                        w = torch.cat([w, torch.flatten(fw)], dim=0)
-                weight_flat_aug.append(w)
-            weight_flat_aug = torch.stack(weight_flat_aug, axis=1)
-    #        diff = weight_flat - weight_flat_aug
-            st = torch.stack([weight_flat, weight_flat_aug])
-            diff = torch.norm(st, p='fro', dim=0)
-            diff = torch.norm(diff, p='fro', dim=0)
-
-            norm = torch.mean(diff)
-
-            self.writer.add_scalar("Distance", norm, t)
-            self.writer.add_scalar("loss", loss_q, t)
-
-            loss_q += self.reg * norm
-
-###############################################################################
-# End Weight Clustering
-####################################################################################
+        self.writer.add_scalar("Distance", norm, t)
+        loss_q += self.reg * norm  # norm is calculated even when self.reg == 0, for the record
         self.writer.add_scalar("loss+Distance", loss_q, t)
         # optimize theta parameters
         self.meta_optim.zero_grad()
         loss_q.backward()
 
-        # print('meta update')
-        # for p in self.net.parameters()[:5]:
-        # 	print(torch.norm(p).item())
         self.meta_optim.step()
-        accs = np.array(corrects) / (querysz * task_num)
+        acc = num_corrects / (querysz * task_num)
 
-        return accs
+        return acc
 
-
-    def finetunning(self, x_spt, y_spt, x_qry, y_qry):
+    def finetunning(self, x_spt, y_spt, x_qry, y_qry) -> float:
         """
 
         :param x_spt:   [setsz, c_, h, w]
@@ -259,70 +239,58 @@ class Meta(nn.Module):
         :param y_qry:   [querysz]
         :return:
         """
-        assert len(x_spt.shape) == 4
+        # assert len(x_spt.shape) == 4
+        if len(x_spt.shape) == 4:
+            x_spt = x_spt.unsqueeze(0)
+            y_spt = y_spt.unsqueeze(0)
+            x_qry = x_qry.unsqueeze(0)
+            y_qry = y_qry.unsqueeze(0)
 
-        querysz = x_qry.size(0)
+        task_num = x_spt.size(0)
+        querysz = x_qry.size(1)
+        num_corrects = 0
 
-        corrects = [0 for _ in range(self.update_step_test + 1)]
-
-        # in order to not ruin the state of running_mean/variance and bn_weight/bias
-        # we finetunning on the copied model instead of self.net
         net = deepcopy(self.net)
-        # 1. run the i-th task and compute loss for k=0
-        logits = net(x_spt)
-        loss = F.cross_entropy(logits, y_spt)
-        grad = torch.autograd.grad(loss, net.parameters())
-        fast_weights = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, net.parameters())))
 
-        # this is the loss and accuracy before first update
-        with torch.no_grad():
-            # [setsz, nway]
-            logits_q = net(x_qry, net.parameters(), bn_training=True)
-            # [setsz]
-            pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
-            # scalar
-            correct = torch.eq(pred_q, y_qry).sum().item()
-            corrects[0] = corrects[0] + correct
+        for i in range(task_num):
+            # 1. run the i-th task and compute loss for k=0
+            logits = net(x_spt[i])
+            loss = F.cross_entropy(logits, y_spt[i])
+            grad = torch.autograd.grad(loss, net.parameters())
+            finetuned_parameter = list(
+                map(
+                    lambda p: p[1] - self.update_lr * p[0],
+                    zip(grad, net.parameters()),
+                )
+            )
 
-        # this is the loss and accuracy after the first update
-        with torch.no_grad():
-            # [setsz, nway]
-            logits_q = net(x_qry, fast_weights, bn_training=True)
-            # [setsz]
-            pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
-            # scalar
-            correct = torch.eq(pred_q, y_qry).sum().item()
-            corrects[1] = corrects[1] + correct
+            for k in range(self.update_step_test):
+                logits = net(x_spt[i], finetuned_parameter, bn_training=True)
+                loss = F.cross_entropy(logits, y_spt[i])
+                grad = torch.autograd.grad(loss, finetuned_parameter)
+                finetuned_parameter = list(
+                    map(
+                        lambda p: p[1] - self.update_lr * p[0],
+                        zip(grad, finetuned_parameter),
+                    )
+                )
 
-        for k in range(1, self.update_step_test):
-            # 1. run the i-th task and compute loss for k=1~K-1
-            logits = net(x_spt, fast_weights, bn_training=True)
-            loss = F.cross_entropy(logits, y_spt)
-            # 2. compute grad on theta_pi
-            grad = torch.autograd.grad(loss, fast_weights)
-            # 3. theta_pi = theta_pi - train_lr * grad
-            fast_weights = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, fast_weights)))
-
-            logits_q = net(x_qry, fast_weights, bn_training=True)
-            # loss_q will be overwritten and just keep the loss_q on last update step.
-            loss_q = F.cross_entropy(logits_q, y_qry)
+                logits_q = net(x_qry[i], finetuned_parameter, bn_training=True)
+                loss_q = F.cross_entropy(logits_q, y_qry[i])
 
             with torch.no_grad():
                 pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
-                correct = torch.eq(pred_q, y_qry).sum().item()  # convert to numpy
-                corrects[k + 1] = corrects[k + 1] + correct
-
+                correct = torch.eq(pred_q, y_qry[i]).sum().item()  # convert to numpy
+                num_corrects += correct
         del net
 
-        accs = np.array(corrects) / querysz
-
-        return accs
+        acc = num_corrects / (querysz * task_num)
+        return acc
 
 
 def main():
     pass
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-

@@ -26,7 +26,6 @@ class Rotate:
         return TF.rotate(img, angle)
 
 
-
 class MiniImagenet(Dataset):
     """
     put mini-imagenet files as :
@@ -40,13 +39,13 @@ class MiniImagenet(Dataset):
     sets: conains n_way * k_shot for meta-train set, n_way * n_query for meta-test set.
     """
 
-#    def __init__(self, root, mode, batchsz, n_way, k_shot, k_query, resize, startidx=0, aug=False):
-    def __init__(self, root, mode, batchsz, args, startidx=0):
+    #    def __init__(self, root, mode, num_episodes, n_way, k_shot, k_query, resize, startidx=0, aug=False):
+    def __init__(self, root, mode, num_episodes, args, startidx=0):
         """
 
         :param root: root path of mini-imagenet
         :param mode: train, val or test
-        :param batchsz: batch size of sets, not batch of imgs
+        :param num_episodes: batch size of sets, not batch of imgs
         :param n_way:
         :param k_shot:
         :param k_query: num of quy imgs per class
@@ -54,35 +53,34 @@ class MiniImagenet(Dataset):
         :param startidx: start to index label from startidx
         """
 
-        self.batchsz = batchsz  # batch of set, not batch of imgs
+        self.num_episodes = num_episodes  # batch of set, not batch of imgs
         self.n_way = args.n_way  # n-way
         self.k_shot = args.k_spt  # k-shot
         self.k_query = args.k_qry  # for evaluation
         self.mode = mode
-        if self.mode == 'val' or self.mode == 'test':
+        if self.mode == "val" or self.mode == "test":
             self.k_query = 1
         self.setsz = self.n_way * self.k_shot  # num of samples per set
         self.querysz = self.n_way * self.k_query  # number of samples per set for evaluation
         self.resize = args.imgsz  # resize to
         self.startidx = startidx  # index label not from 0, but from startidx
-        self.aug = args.aug # Add augmentation or not
-        self.original_augmentation = args.original_augmentation
-        print('shuffle DB :%s, b:%d, %d-way, %d-shot, %d-query, resize:%d' % (
-        self.mode, self.batchsz, self.n_way, self.k_shot, self.k_query, self.resize))
+        self.need_aug = args.need_aug  # Needs augmentation or not
+        self.flip = args.flip
+        print(
+            "shuffle DB :%s, b:%d, %d-way, %d-shot, %d-query, resize:%d"
+            % (self.mode, self.num_episodes, self.n_way, self.k_shot, self.k_query, self.resize)
+        )
 
-        self.transform_aug = self.get_transform(mode, True)
-        if self.original_augmentation:
-            self.transform = self.transform_aug
-        else:
-            self.transform = self.get_transform(mode, False)
+        self.transform = self.get_transform(mode, aug=False, flip=self.flip)
+        self.transform_aug = self.get_transform(mode, aug=True, flip=self.flip)
 
-        self.path = os.path.join(root, 'images')  # image path
-        images = glob.glob(root + '/*/*/*.jpg')
+        self.path = os.path.join(root, "images")  # image path
+        images = glob.glob(root + "/*/*/*.jpg")
         self.images = {}
         for img in images:
             _, name = os.path.split(img)
             self.images[name] = img
-        csvdata = self.loadCSV(os.path.join(root, mode + '.csv'))  # csv path
+        csvdata = self.loadCSV(os.path.join(root, mode + ".csv"))  # csv path
         # self.data <- csvdata 속의 file class
         self.data = []
         self.img2label = {}
@@ -91,56 +89,36 @@ class MiniImagenet(Dataset):
             self.img2label[k] = i + self.startidx  # {"img_name[:9]":label}
         self.cls_num = len(self.data)
 
-        self.create_batch(self.batchsz)
+        self.create_batch(self.num_episodes)
 
-    def get_transform(self, mode, aug):
+    def get_transform(self, mode, aug, flip=False):
         """
         Return the transform function with or without augmentation
         """
-        if mode == 'train':
-            transform = transforms.Compose([lambda x: np.asarray(Image.open(x).convert('RGB')),
-                                            lambda x: self.corrupt_c(x, aug),
-                                            lambda x: Image.fromarray(x),
-                                            transforms.Resize((self.resize, self.resize)),
-                                            lambda x: self.augmentation(x, aug),
-                                            transforms.ToTensor(),
-                                            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-                                            ])
+        if mode == "train":
+            transform = transforms.Compose(
+                [
+                    lambda x: np.asarray(Image.open(x).convert("RGB")),
+                    lambda x: Image.fromarray(x),
+                    transforms.Resize((self.resize, self.resize)),
+                    lambda x: self.augmentation(x, aug, flip),
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+                ]
+            )
         else:
-            transform = transforms.Compose([lambda x: Image.open(x).convert('RGB'),
-                                            transforms.Resize((self.resize, self.resize)),
-                                            transforms.ToTensor(),
-                                            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-                                            ])
+            transform = transforms.Compose(
+                [
+                    lambda x: Image.open(x).convert("RGB"),
+                    transforms.Resize((self.resize, self.resize)),
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+                ]
+            )
 
         return transform
 
-    def corrupt_c(self, img, aug):
-        """
-        Return a imagenet-c corrupted image.
-        (gaussian_noise, gaussian_blur)
-        if no augmentation is required,
-        return input image without any transformation.
-
-        Keyword arguments:
-        img -- Numpy Array with size [224, 224, 3]
-        aug -- bool, augmentation or not
-        """
-# Not Using imagenet-c corruption
-        aug = False
-        if not aug:
-            return img
-        else:
-            corruption_names = [
-                                'gaussian_noise',
-                                'gaussian_blur',
-                               ]
-            for cor in corruption_names:
-                if random.random() <= prob:
-                    img = corrupt(img, corruption_name = cor)
-            return img
-
-    def augmentation(self, img, aug):
+    def augmentation(self, img, aug, flip=False):
         """
         Return a [flipped, rotated] image.
         if no augmentation is required,
@@ -149,16 +127,18 @@ class MiniImagenet(Dataset):
         if not aug:
             return img
         else:
-#            transform = transforms.Compose([
-#                                            transforms.RandomHorizontalFlip(p=prob),
-##                                            transforms.RandomRotation((0,70)),
-#                                            ])
-            transform = transforms.Compose([random.choice([
-#                                            transforms.RandomHorizontalFlip(p=0.5),
-                                            Rotate(angles=[-90, 0, 90, 180])
-                                            ])])
+            #            transform = transforms.Compose([
+            #                                            transforms.RandomHorizontalFlip(p=prob),
+            ##                                            transforms.RandomRotation((0,70)),
+            #                                            ])
+            augmentation_list = [Rotate(angles=[-90, 0, 90, 180])]
+            if flip:
+                augmentation_list.append(transforms.RandomHorizontalFlip(p=0.5))
+            transform = transforms.Compose(
+                # random.choice(augmentation_list)
+                augmentation_list
+            )
             return transform(img)
-
 
     def loadCSV(self, csvf):
         """
@@ -168,7 +148,7 @@ class MiniImagenet(Dataset):
         """
         dictLabels = {}
         with open(csvf) as csvfile:
-            csvreader = csv.reader(csvfile, delimiter=',')
+            csvreader = csv.reader(csvfile, delimiter=",")
             next(csvreader, None)  # skip (filename, label)
             for i, row in enumerate(csvreader):
                 filename = row[0]
@@ -180,16 +160,16 @@ class MiniImagenet(Dataset):
                     dictLabels[label] = [filename]
         return dictLabels
 
-    def create_batch(self, batchsz):
+    def create_batch(self, num_episodes):
         """
         create batch for meta-learning.
-        ×episode× here means batch, and it means how many sets we want to retain.
+        episode here means batch, and it means how many sets we want to retain.
         :param episodes: batch size
         :return:
         """
         self.support_x_batch = []  # support set batch
         self.query_x_batch = []  # query set batch
-        for b in range(batchsz):  # for each batch
+        for b in range(num_episodes):  # for each batch
             # 1.select n_way classes randomly
             selected_cls = np.random.choice(self.cls_num, self.n_way, False)  # no duplicate
             np.random.shuffle(selected_cls)
@@ -197,11 +177,15 @@ class MiniImagenet(Dataset):
             query_x = []
             for cls in selected_cls:
                 # 2. select k_shot + k_query for each class
-                selected_imgs_idx = np.random.choice(len(self.data[cls]), self.k_shot + self.k_query, False)
+                selected_imgs_idx = np.random.choice(
+                    len(self.data[cls]), self.k_shot + self.k_query, False
+                )
                 np.random.shuffle(selected_imgs_idx)
-                indexDtrain = np.array(selected_imgs_idx[:self.k_shot])  # idx for Dtrain
-                indexDtest = np.array(selected_imgs_idx[self.k_shot:])  # idx for Dtest
-                support_x.append(np.array(self.data[cls])[indexDtrain].tolist())  # get all images filename for current Dtrain
+                indexDtrain = np.array(selected_imgs_idx[: self.k_shot])  # idx for Dtrain
+                indexDtest = np.array(selected_imgs_idx[self.k_shot :])  # idx for Dtest
+                support_x.append(
+                    np.array(self.data[cls])[indexDtrain].tolist()
+                )  # get all images filename for current Dtrain
                 query_x.append(np.array(self.data[cls])[indexDtest].tolist())
 
             # shuffle the correponding relation between support set and query set
@@ -213,7 +197,7 @@ class MiniImagenet(Dataset):
 
     def __getitem__(self, index):
         """
-        index means index of sets, 0<= index <= batchsz-1
+        index means index of sets, 0<= index <= num_episodes-1
         :param index:
         :return:
         """
@@ -226,14 +210,25 @@ class MiniImagenet(Dataset):
         # [querysz]
         query_y = np.zeros((self.querysz), dtype=np.int)
 
-        flatten_support_x = [self.images[item] for sublist in self.support_x_batch[index] for item in sublist]
+        flatten_support_x = [
+            self.images[item] for sublist in self.support_x_batch[index] for item in sublist
+        ]
         support_y = np.array(
-            [self.img2label[item[:9]]  # filename:n0153282900000005.jpg, the first 9 characters treated as label
-             for sublist in self.support_x_batch[index] for item in sublist]).astype(np.int32)
+            [
+                self.img2label[
+                    item[:9]
+                ]  # filename:n0153282900000005.jpg, the first 9 characters treated as label
+                for sublist in self.support_x_batch[index]
+                for item in sublist
+            ]
+        ).astype(np.int32)
 
-        flatten_query_x = [self.images[item] for sublist in self.query_x_batch[index] for item in sublist]
-        query_y = np.array([self.img2label[item[:9]]
-                            for sublist in self.query_x_batch[index] for item in sublist]).astype(np.int32)
+        flatten_query_x = [
+            self.images[item] for sublist in self.query_x_batch[index] for item in sublist
+        ]
+        query_y = np.array(
+            [self.img2label[item[:9]] for sublist in self.query_x_batch[index] for item in sublist]
+        ).astype(np.int32)
 
         # support_y: [setsz]
         # query_y: [querysz]
@@ -249,31 +244,43 @@ class MiniImagenet(Dataset):
 
         # print('relative:', support_y_relative, query_y_relative)
 
-        if self.aug:
+        if self.need_aug:
             support_x_aug = deepcopy(support_x)
             query_x_aug = deepcopy(query_x)
         for i, path in enumerate(flatten_support_x):
             support_x[i] = self.transform(path)
-            if self.aug:
+            if self.need_aug:
                 support_x_aug[i] = self.transform_aug(path)
 
         for i, path in enumerate(flatten_query_x):
             query_x[i] = self.transform(path)
-            if self.aug:
+            if self.need_aug:
                 query_x_aug[i] = self.transform_aug(path)
         # print(support_set_y)
         # return support_x, torch.LongTensor(support_y), query_x, torch.LongTensor(query_y)
 
-        if self.aug and self.mode=='train':
-            return support_x, torch.LongTensor(support_y_relative), query_x, torch.LongTensor(query_y_relative), support_x_aug, query_x_aug
-        return support_x, torch.LongTensor(support_y_relative), query_x, torch.LongTensor(query_y_relative)
+        if self.need_aug and self.mode == "train":
+            return (
+                support_x,
+                torch.LongTensor(support_y_relative),
+                query_x,
+                torch.LongTensor(query_y_relative),
+                support_x_aug,
+                query_x_aug,
+            )
+        return (
+            support_x,
+            torch.LongTensor(support_y_relative),
+            query_x,
+            torch.LongTensor(query_y_relative),
+        )
 
     def __len__(self):
-        # as we have built up to batchsz of sets, you can sample some small batch size of sets.
-        return self.batchsz
+        # as we have built up to num_episodes of sets, you can sample some small batch size of sets.
+        return self.num_episodes
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # the following episode is to view one set of images via tensorboard.
     from torchvision.utils import make_grid
     from matplotlib import pyplot as plt
@@ -282,32 +289,41 @@ if __name__ == '__main__':
 
     plt.ion()
 
-    tb = SummaryWriter('runs', 'mini-imagenet')
-    mini = MiniImagenet('../Datasets/mini-imagenet/', mode='train', n_way=5, k_shot=1, k_query=1, batchsz=1000, resize=168, aug=True)
-#    mini_aug = MiniImagenet('../Datasets/mini-imagenet/', mode='train', n_way=5, k_shot=1, k_query=1, batchsz=1000, resize=168, aug=True)
+    tb = SummaryWriter("runs", "mini-imagenet")
+    mini = MiniImagenet(
+        "../Datasets/mini-imagenet/",
+        mode="train",
+        n_way=5,
+        k_shot=1,
+        k_query=1,
+        num_episodes=1000,
+        resize=168,
+        aug=True,
+    )
+    #    mini_aug = MiniImagenet('../Datasets/mini-imagenet/', mode='train', n_way=5, k_shot=1, k_query=1, num_episodes=1000, resize=168, aug=True)
 
     for i, set_ in enumerate(mini):
         # support_x: [k_shot*n_way, 3, 84, 84]
         support_x, support_y, query_x, query_y = set_
 
         support_x = make_grid(support_x, nrow=2)
-#        support_x_aug = make_grid(mini_aug[0][0], nrow=2)
+        #        support_x_aug = make_grid(mini_aug[0][0], nrow=2)
         query_x = make_grid(query_x, nrow=2)
 
         plt.figure(1)
         plt.imshow(support_x.transpose(2, 0).numpy())
-#        plt.savefig('asd.png')
+        #        plt.savefig('asd.png')
         plt.pause(0.5)
         plt.figure(2)
         plt.imshow(query_x.transpose(2, 0).numpy())
         plt.pause(0.5)
         plt.figure(3)
-#        plt.imshow(support_x_aug.transpose(2, 0).numpy())
-#        plt.savefig('asd_aug.png')
-#        plt.pause(0.5)
+        #        plt.imshow(support_x_aug.transpose(2, 0).numpy())
+        #        plt.savefig('asd_aug.png')
+        #        plt.pause(0.5)
 
-        tb.add_image('support_x', support_x)
-        tb.add_image('query_x', query_x)
+        tb.add_image("support_x", support_x)
+        tb.add_image("query_x", query_x)
 
         time.sleep(5)
 

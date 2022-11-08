@@ -1,0 +1,14 @@
+/home/bjk/.conda/envs/MAML/lib/python3.8/site-packages/scipy/__init__.py:146: UserWarning: A NumPy version >=1.16.5 and <1.23.0 is required for this version of SciPy (detected version 1.23.4
+  warnings.warn(f"A NumPy version >={np_minversion} and <{np_maxversion}"
+{0: {'aug': True, 'epoch': 150000, 'qry_aug': False, 'reg': 0.0},
+ 1: {'aug': True, 'epoch': 150000, 'qry_aug': True, 'reg': 0.05},
+ 2: {'aug': False,
+     'epoch': 150000,
+     'log_dir': 'baseline_aug',
+     'original_augmentation': True,
+     'qry_aug': False,
+     'reg': 0.0}}
+Setting #Traceback (most recent call last):
+  File "run.py", line 44, in <module>
+    setting_number = input("Setting #")
+KeyboardInterrupt

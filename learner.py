@@ -9,7 +9,6 @@ class Learner(nn.Module):
     """
 
     """
-
     def __init__(self, config, imgc, imgsz):
         """
 

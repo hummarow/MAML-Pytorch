@@ -8,7 +8,11 @@ import matplotlib.pyplot as plt
 import os
 import configs
 import typing
-from MiniImagenet import MiniImagenet 
+import time
+from datetime import datetime
+from pathlib import Path
+from copy import deepcopy
+from MiniImagenet import MiniImagenet
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim import lr_scheduler
@@ -17,198 +21,323 @@ from tqdm import tqdm
 from meta import Meta
 
 
-imagenet_path = '/home/bjk/Datasets/mini-imagenet/'
+TRAIN_EPISODES = 10000
+VALIDATION_EPISODES = 100
+TEST_EPISODES = 600
+
+PBAR_UPDATE_CYCLE = 1000
+VALIDATION_CYCLE = 500
+
+VALIDATION_STARTING_POINT = 10000
+
+now = datetime.now()
+
+imagenet_path = "/home/bjk/Datasets/mini-imagenet/"
+MODEL_DIR = "./logs/models/" + now.strftime("%y%m%d_%H%M%S")
+Path(MODEL_DIR).mkdir(parents=True, exist_ok=True)
 
 # Tensorboard custom scalar layout
 layout = {
     "Accuracy": {
-        "Accuracy": ["Multiline", ["Accuracy/Train", "Accuracy/Test", "Accuracy/AugTest"]],
-    }
+        "Accuracy": [
+            "Multiline",
+            ["Accuracy/Train", "Accuracy/Val", "Accuracy/AugTest"],
+        ],
+    },
+    "loss": {
+        "loss": [
+            "Multiline",
+            ["loss/original", "loss/augmented"],
+        ]
+    },
 }
 
 
-def mean_confidence_interval(accs, confidence=0.95):
-    n = accs.shape[0]
-    m, se = np.mean(accs), scipy.stats.sem(accs)
-    h = se * scipy.stats.t._ppf((1 + confidence) / 2, n - 1)
+def mean_confidence_interval(data, confidence=0.95):
+    a = 1.0 * np.array(data)
+    n = len(a)
+    m, se = np.mean(a), scipy.stats.sem(a)
+    h = se * scipy.stats.t.ppf((1 + confidence) / 2.0, n - 1)
     return m, h
+
+
+# def mean_confidence_interval(accs, confidence=0.95):
+#     n = accs.shape[0]
+#     m, se = np.mean(accs), scipy.stats.sem(accs)
+#     h = se * scipy.stats.t._ppf((1 + confidence) / 2, n - 1)
+#     return m, h
+def parse_argument(kwargs):
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument("--epoch", type=int, help="epoch number", default=6)
+    argparser.add_argument("--n_way", type=int, help="n way", default=5)
+    argparser.add_argument("--k_spt", type=int, help="k shot for support set", default=1)
+    argparser.add_argument("--k_qry", type=int, help="k shot for query set", default=15)
+    argparser.add_argument("--imgsz", type=int, help="imgsz", default=84)
+    argparser.add_argument("--imgc", type=int, help="imgc", default=3)
+    argparser.add_argument(
+        "--task_num",
+        type=int,
+        help="meta batch size, namely task num",
+        default=4,
+    )
+    argparser.add_argument(
+        "--meta_lr",
+        type=float,
+        help="meta-level outer learning rate",
+        default=1e-3,
+    )
+    argparser.add_argument(
+        "--update_lr",
+        type=float,
+        help="task-level inner update learning rate",
+        default=0.01,
+    )
+    argparser.add_argument(
+        "--update_step",
+        type=int,
+        help="task-level inner update steps",
+        default=5,
+    )
+    argparser.add_argument(
+        "--episode",
+        type=int,
+        help="Number of training episodes per epoch",
+        default=10000,
+    )
+    argparser.add_argument(
+        "--repeat",
+        type=int,
+        help="number of validations",
+        default=10,
+    )
+    argparser.add_argument(
+        "--update_step_test",
+        type=int,
+        help="update steps for finetunning",
+        default=10,
+    )
+
+    argparser.add_argument("--reg", type=float, help="coefficient for regularizer", default=1.0)
+    argparser.add_argument("--logdir", type=str, help="log directory for tensorboard", default="")
+    argparser.add_argument(
+        "--aug",
+        action="store_true",
+        help="add augmentation and measure weight distance between original data and augmented data",
+        default=False,
+    )
+    argparser.add_argument(
+        "--qry_aug",
+        action="store_true",
+        help="use augmented query set when meta-updating parameters",
+        default=False,
+    )
+    argparser.add_argument(
+        "--traditional_augmentation",
+        action="store_true",
+        help="...",
+        default=False,
+    )
+    argparser.add_argument(
+        "--flip",
+        action="store_true",
+        help="add random horizontal flip augmentation",
+        default=False,
+    )
+
+    args = argparse.Namespace()
+    for i, k in kwargs.items():
+        vars(args)[i] = k
+    args = argparser.parse_args(namespace=args)
+    return args
 
 
 def main(**kwargs):
     """
     return list of validation loss
     """
-    argparser = argparse.ArgumentParser()
-    argparser.add_argument('--epoch', type=int, help='epoch number', default=60000)
-    argparser.add_argument('--n_way', type=int, help='n way', default=5)
-    argparser.add_argument('--k_spt', type=int, help='k shot for support set', default=1)
-    argparser.add_argument('--k_qry', type=int, help='k shot for query set', default=15)
-    argparser.add_argument('--imgsz', type=int, help='imgsz', default=84)
-    argparser.add_argument('--imgc', type=int, help='imgc', default=3)
-    argparser.add_argument('--task_num', type=int, help='meta batch size, namely task num', default=4)
-    argparser.add_argument('--meta_lr', type=float, help='meta-level outer learning rate', default=1e-3)
-    argparser.add_argument('--update_lr', type=float, help='task-level inner update learning rate', default=0.01)
-    argparser.add_argument('--update_step', type=int, help='task-level inner update steps', default=5)
-    argparser.add_argument('--update_step_test', type=int, help='update steps for finetunning', default=10)
+    args = parse_argument(kwargs)
+    TRAIN_EPISODES = args.episode
+    validation_num = args.repeat
+    args.need_aug = args.aug | args.traditional_augmentation
+    model_name = (
+        now.strftime("%H%M_")
+        + ("tradAug_" if args.traditional_augmentation else "")
+        + ("augmented_" if args.aug else "")
+        + (str(args.reg) + "_" if args.reg > 0 else "")
+        + "model.pt"
+    )
+    MODEL_PATH = os.path.join(MODEL_DIR, model_name)
 
-    argparser.add_argument('--reg', type=float, help='coefficient for regularizer', default=1.0)
-    argparser.add_argument('--log_dir', type=str, help='log directory for tensorboard', default='')
-    argparser.add_argument('--aug', action='store_true',
-                           help='add augmentation and measure weight distance between original data and augmented data',
-                           default=False)
-    argparser.add_argument('--test',
-                           type=str,
-                           help='use original test set, or augmented set, or both',
-                           default='original')
-    argparser.add_argument('--qry_aug',
-                           action='store_true',
-                           help='use augmented query set when meta-updating parameters',
-                           default=False)
-    argparser.add_argument('--original_augmentation',
-                           action='store_true',
-                           help='...',
-                           default=False)
-
-    args = argparser.parse_args()
-    for i, k in kwargs.items():
-        vars(args)[i] = k
-
-    torch.manual_seed(222)
-    torch.cuda.manual_seed_all(222)
-    np.random.seed(222)
+    seed = int(time.time())
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
 
     print(args)
 
     config = [
-        ('conv2d', [32, 3, 3, 3, 1, 0]),
-        ('relu', [True]),
-        ('bn', [32]),
-        ('max_pool2d', [2, 2, 0]),
-        ('conv2d', [32, 32, 3, 3, 1, 0]),
-        ('relu', [True]),
-        ('bn', [32]),
-        ('max_pool2d', [2, 2, 0]),
-        ('conv2d', [32, 32, 3, 3, 1, 0]),
-        ('relu', [True]),
-        ('bn', [32]),
-        ('max_pool2d', [2, 2, 0]),
-        ('conv2d', [32, 32, 3, 3, 1, 0]),
-        ('relu', [True]),
-        ('bn', [32]),
-        ('max_pool2d', [2, 1, 0]),
-        ('flatten', []),
-        ('linear', [args.n_way, 32 * 5 * 5])
+        ("conv2d", [32, 3, 3, 3, 1, 0]),
+        ("relu", [True]),
+        ("bn", [32]),
+        ("max_pool2d", [2, 2, 0]),
+        ("conv2d", [32, 32, 3, 3, 1, 0]),
+        ("relu", [True]),
+        ("bn", [32]),
+        ("max_pool2d", [2, 2, 0]),
+        ("conv2d", [32, 32, 3, 3, 1, 0]),
+        ("relu", [True]),
+        ("bn", [32]),
+        ("max_pool2d", [2, 2, 0]),
+        ("conv2d", [32, 32, 3, 3, 1, 0]),
+        ("relu", [True]),
+        ("bn", [32]),
+        ("max_pool2d", [2, 1, 0]),
+        ("flatten", []),
+        ("linear", [args.n_way, 32 * 5 * 5]),
     ]
 
-    device = torch.device('cuda')
-    maml = Meta(args, config).to(device)
+    device = torch.device("cuda")
 
-    tmp = filter(lambda x: x.requires_grad, maml.parameters())
-    num = sum(map(lambda x: np.prod(x.shape), tmp))
-#    print(maml)
-#    print('Total trainable tensors:', num)
+    # num_episodes here means total episode number
+    mini = MiniImagenet(imagenet_path, mode="train", num_episodes=TRAIN_EPISODES, args=args)
+    mini_val = MiniImagenet(imagenet_path, mode="val", num_episodes=VALIDATION_EPISODES, args=args)
+    mini_test = MiniImagenet(imagenet_path, mode="test", num_episodes=TEST_EPISODES, args=args)
 
-    # batchsz here means total episode number
-    mini = MiniImagenet(imagenet_path, mode='train', batchsz=10000, args=args)
-    mini_val = MiniImagenet(imagenet_path, mode='val', batchsz=100, args=args)
-    mini_test = MiniImagenet(imagenet_path, mode='test', batchsz=100, args=args)
-
-    log_path = configs.get_path(args.log_dir, args.aug, args.reg)
+    log_path = configs.get_path(args.logdir, args.aug, args.reg)
 
     writer = SummaryWriter(log_path)
     writer.add_custom_scalars(layout)
+    best_val_acc = -float("inf")
+    mean_val_accs = []
+    val_accs = [0] * VALIDATION_EPISODES
+    test_accs = [0] * TEST_EPISODES
+    best_val_accs = [0] * validation_num
+    best_test_accs = [0] * validation_num
+    best_step = 0
+    checkpoint = None
+    t = -1
+    for validation_iter in range(validation_num):
+        maml = Meta(args, config).to(device)
+        print(validation_iter)
+        for epoch in tqdm(range(args.epoch)):
+            # fetch meta_num_episodes num of episode each time
+            db = DataLoader(
+                mini,
+                args.task_num,
+                shuffle=True,
+                num_workers=1,
+                pin_memory=True,
+            )
+            for step, data in enumerate(db):
+                t += 1  # Timestep Update
+                assert (len(data) == 4 and not args.need_aug) or (
+                    len(data) == 6 and args.need_aug
+                )  # if augmentation is necessary, data contains x_spt_aug, x_qry_aug additionally.
+                if not args.need_aug:
+                    (x_spt, y_spt, x_qry, y_qry) = data
+                    x_spt_aug = None
+                    x_qry_aug = None
+                else:
+                    (
+                        x_spt,
+                        y_spt,
+                        x_qry,
+                        y_qry,
+                        x_spt_aug,
+                        x_qry_aug,
+                    ) = data  # Length asserted (safe)
+                    x_spt_aug = x_spt_aug.to(device)
+                    x_qry_aug = x_qry_aug.to(device)
 
-    val_accs = []
+                x_spt, y_spt, x_qry, y_qry = (
+                    x_spt.to(device),
+                    y_spt.to(device),
+                    x_qry.to(device),
+                    y_qry.to(device),
+                )
+                accs = maml(
+                    x_spt,
+                    y_spt,
+                    x_qry,
+                    y_qry,
+                    t,
+                    spt_aug=x_spt_aug,
+                    qry_aug=x_qry_aug,
+                )
 
-    for epoch in tqdm(range(args.epoch//10000)):
-        if args.aug:
-            # fetch meta_batchsz num of episode each time
-            db = DataLoader(mini, args.task_num, shuffle=True, num_workers=1, pin_memory=True)
-            for step, (x_spt, y_spt, x_qry, y_qry, x_spt_aug, x_qry_aug) in enumerate(db):
-                x_spt, y_spt, x_qry, y_qry = x_spt.to(device), y_spt.to(device), x_qry.to(device), y_qry.to(device)
-                x_spt_aug, x_qry_aug = x_spt_aug.to(device), x_qry_aug.to(device)
-                accs = maml(x_spt, y_spt, x_qry, y_qry, step+len(db)*epoch, spt_aug=x_spt_aug, qry_aug=x_qry_aug)
                 if step % 30 == 0:
-#                    print('step:', step, '\ttraining acc:', accs)
-                    writer.add_scalar('Accuracy/Train',
-                                      accs[-1],
-                                      step + epoch*len(db))
+                    writer.add_scalar("Accuracy/Train", accs, t)
 
-                if step % 500 == 0:  # evaluation
-                    if args.test in ['original', 'both']:
-                        db_val = DataLoader(mini_val, 1, shuffle=True, num_workers=1, pin_memory=True)
-                        accs_all_test = []
+                # Evaluation with validation data
+                if t > VALIDATION_STARTING_POINT and step % VALIDATION_CYCLE == 0:
+                    db_val = DataLoader(
+                        mini_val,
+                        1,
+                        shuffle=True,
+                        num_workers=1,
+                        pin_memory=True,
+                    )
 
-                        for x_spt, y_spt, x_qry, y_qry in db_val:
-                            x_spt, y_spt, x_qry, y_qry = x_spt.squeeze(0).to(device), y_spt.squeeze(0).to(device), \
-                                                         x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
+                    for i, (x_spt, y_spt, x_qry, y_qry) in enumerate(db_val):
+                        x_spt, y_spt, x_qry, y_qry = (
+                            x_spt.squeeze(0).to(device),
+                            y_spt.squeeze(0).to(device),
+                            x_qry.squeeze(0).to(device),
+                            y_qry.squeeze(0).to(device),
+                        )
 
-                            accs = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
-                            accs_all_test.append(accs)
+                        acc = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
+                        val_accs[i] = acc
 
-                        # [b, update_step+1]
-                        accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
-#                        print('Test acc:', accs)
-                        writer.add_scalar('Accuracy',
-                                          accs[-1],
-                                          step + epoch*len(db))
-                        writer.add_scalar('Accuracy/Test',
-                                          accs[-1],
-                                          step + epoch*len(db))
-                        val_accs.append(accs[-1])
+                    # [b, update_step+1]
+                    mean_acc = np.array(val_accs).mean(axis=0).astype(np.float16)
+                    writer.add_scalar("Accuracy", mean_acc, t)
+                    writer.add_scalar("Accuracy/Val", mean_acc, t)
+                    mean_val_accs.append(mean_acc)
+                # if step % PBAR_UPDATE_CYCLE == 0:
+                #     pbar.update(PBAR_UPDATE_CYCLE)
+            # Save the best model for given validation step
+            if mean_val_accs[-1] > best_val_acc:
+                best_val_acc = mean_val_accs[-1]
+                if checkpoint:
+                    del checkpoint
+                checkpoint = deepcopy(maml.state_dict())
+                torch.save(checkpoint, MODEL_PATH)
+                best_step = t
+        best_val_accs[validation_iter] = best_val_acc
+        # # Choose the best model
 
-        else:
-            db = DataLoader(mini, args.task_num, shuffle=True, num_workers=1, pin_memory=True)
-            for step, (x_spt, y_spt, x_qry, y_qry) in enumerate(db):
-
-                x_spt, y_spt, x_qry, y_qry = x_spt.to(device), y_spt.to(device), x_qry.to(device), y_qry.to(device)
-
-                accs = maml(x_spt, y_spt, x_qry, y_qry, step+len(db)*epoch)
-
-                if step % 30 == 0:
-#                    print('step:', step, '\ttraining acc:', accs)
-                    writer.add_scalar('Accuracy/Train',
-                                      accs[-1],
-                                      step + epoch*len(db))
-
-                if step % 500 == 0:  # evaluation
-                    if args.test in ['original', 'both']:
-                        db_val = DataLoader(mini_val, 1, shuffle=True, num_workers=1, pin_memory=True)
-                        accs_all_test = []
-
-                        for x_spt, y_spt, x_qry, y_qry in db_val:
-                            x_spt, y_spt, x_qry, y_qry = x_spt.squeeze(0).to(device), y_spt.squeeze(0).to(device), \
-                                                         x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
-
-                            accs = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
-                            accs_all_test.append(accs)
-
-                        # [b, update_step+1]
-                        accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
-#                        print('Test acc:', accs)
-                        writer.add_scalar('Accuracy',
-                                          accs[-1],
-                                          step + epoch*len(db))
-                        writer.add_scalar('Accuracy/Test',
-                                          accs[-1],
-                                          step + epoch*len(db))
-                        val_accs.append(accs[-1])
-
+        # maml = Meta(args, config).to(device)
+        maml.load_state_dict(checkpoint)
         db_test = DataLoader(mini_test, 1, shuffle=True, num_workers=1, pin_memory=True)
-        for x_spt, y_spt, x_qry, y_qry in db_test:
-            x_spt, y_spt, x_qry, y_qry = x_spt.squeeze(0).to(device), y_spt.squeeze(0).to(device), \
-                                         x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
-    
-            accs = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
-            accs_all_test.append(accs)
-    
-        # [b, update_step+1]
-        accs = np.array(accs_all_test).mean(axis=0).astype(np.float16)
-        print("Test Score: ", accs[-1])
-        print("Val Score: ", val_accs[-1])
-    
-    return val_accs
+        for i, (x_spt, y_spt, x_qry, y_qry) in enumerate(db_test):
+            x_spt, y_spt, x_qry, y_qry = (
+                x_spt.squeeze(0).to(device),
+                y_spt.squeeze(0).to(device),
+                x_qry.squeeze(0).to(device),
+                y_qry.squeeze(0).to(device),
+            )
+
+            acc = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
+            test_accs[i] = acc
+        del maml
+
+        mean_test_acc = np.array(test_accs).mean(axis=0).astype(np.float16)
+        best_test_accs[validation_iter] = mean_test_acc
+        print("Step: {}".format(best_step))
+        print("Test: {}%".format(mean_test_acc * 100))
+    print(
+        "Shot: {}\nAug: {}\nReg: {}\nFlip: {}".format(
+            str(args.k_spt), str(args.aug), str(args.reg), str(args.flip)
+        )
+    )
+    mean, ci = mean_confidence_interval(best_val_accs)
+    print("{}% +- {}%".format(mean * 100, ci * 100))
+    mean, ci = mean_confidence_interval(best_test_accs)
+    print("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean * 100, ci * 100))
+
+    return best_test_accs
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
