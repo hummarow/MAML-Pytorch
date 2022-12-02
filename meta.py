@@ -36,18 +36,14 @@ class Meta(nn.Module):
         self.qry_aug = args.qry_aug
         self.traditional_augmentation = args.traditional_augmentation
         self.need_aug = args.need_aug
+        self.rm_augloss = args.rm_augloss
+        self.prox_lam = args.prox_lam
+        self.prox_task = args.prox_task
 
         self.net = Learner(config, args.imgc, args.imgsz)
         self.meta_optim = optim.Adam(self.net.parameters(), lr=self.meta_lr)
         log_path = configs.get_path(args.logdir, args.aug, args.reg)
         self.writer = SummaryWriter(log_path)
-
-    # def get_checkpoint(self):
-    #     checkpoint = {
-    #         "model_state_dict": self.net.state_dict(),
-    #         "optimizer_state_dict": self.meta_optim.state_dict(),
-    #     }
-    #     return checkpoint
 
     def clip_grad_by_norm_(self, grad, max_norm):
         """
@@ -84,6 +80,7 @@ class Meta(nn.Module):
                     w = torch.cat([w, torch.flatten(fw)], dim=0)
             weight_flat.append(w)
         weight_flat = torch.stack(weight_flat, axis=1)
+
         # Flatten weight_2
         weight_flat_2 = []
         for i in range(len(weight_2)):
@@ -96,13 +93,20 @@ class Meta(nn.Module):
             weight_flat_2.append(w)
         weight_flat_2 = torch.stack(weight_flat_2, axis=1)
 
-        #        diff = weight_flat - weight_flat_2
         st = torch.stack([weight_flat, weight_flat_2])
         diff = torch.norm(st, p="fro", dim=0)
         diff = torch.norm(diff, p="fro", dim=0)
 
         norm = torch.mean(diff)
         return norm
+
+    def proximal_reg(self, weight_1, weight_2, lam):
+        # return self.weight_clustering(weight_1, weight_2)
+        reg = 0
+        for i in range(len(weight_1)):
+            delta = weight_1[i].view(-1) - weight_2[i].view(-1)
+            reg += 0.5 * lam * torch.sum(delta**2)
+        return reg
 
     def forward(self, x_spt, y_spt, x_qry, y_qry, t, spt_aug=None, qry_aug=None) -> float:
         """
@@ -150,25 +154,32 @@ class Meta(nn.Module):
             # model with original data
             for k in range(self.update_step):
                 # Update parameter with support data
-                logits = self.net(x_spt[i], finetuned_parameter[i], bn_training=True)
+                w_0 = finetuned_parameter[i]
+                logits = self.net(x_spt[i], w_0, bn_training=True)
                 loss = F.cross_entropy(logits, y_spt[i])
                 grad = torch.autograd.grad(
                     loss,
-                    finetuned_parameter[i],
+                    w_0,
                     create_graph=True,
                     retain_graph=True,
                 )
                 finetuned_parameter[i] = list(
                     map(
                         lambda p: p[1] - self.update_lr * p[0],
-                        zip(grad, finetuned_parameter[i]),
+                        zip(grad, w_0),
                     )
                 )
-            # Calculate loss with query data
+
+            # Calculate loss with query data and updated parameter
             logits_q = self.net(x_qry[i], finetuned_parameter[i], bn_training=True)
             _task_loss = F.cross_entropy(logits_q, y_qry[i])
-            # hessian = torch.autograd.grad(_task_loss, y_qry[i])  # TODO: check 'retain_graph'
             loss_q += _task_loss  # Sum of losses of all tasks
+
+            # iMAML proximal regularizer
+            if (self.prox_task == 0 or self.prox_task == 2) and self.prox_lam > 0:
+                prox_reg = self.proximal_reg(w_0, finetuned_parameter[i], self.prox_lam)
+                loss_q += prox_reg
+
             with torch.no_grad():
                 pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
                 num_corrects += torch.eq(pred_q, y_qry[i]).sum().item()  # convert to numpy
@@ -176,23 +187,24 @@ class Meta(nn.Module):
             # model with augmented data
             if self.need_aug:
                 for k in range(self.update_step):
+                    w_0 = finetuned_parameter_aug[i]
                     # Update parameter with support data
                     logits = self.net(
                         spt_aug[i],
-                        finetuned_parameter_aug[i],
+                        w_0,
                         bn_training=True,
                     )
                     loss = F.cross_entropy(logits, y_spt[i])
                     grad = torch.autograd.grad(
                         loss,
-                        finetuned_parameter_aug[i],
+                        w_0,
                         create_graph=True,
                         retain_graph=True,
                     )
                     finetuned_parameter_aug[i] = list(
                         map(
                             lambda p: p[1] - self.update_lr * p[0],
-                            zip(grad, finetuned_parameter_aug[i]),
+                            zip(grad, w_0),
                         )
                     )
                 # Calculate loss with query data
@@ -200,13 +212,19 @@ class Meta(nn.Module):
                 logits_q = self.net(qry_aug[i], finetuned_parameter_aug[i], bn_training=True)
                 loss_q_aug += F.cross_entropy(logits_q, y_qry_orig[i])
 
+                # iMAML proximal regularizer
+                if (self.prox_task == 1 or self.prox_task == 2) and self.prox_lam > 0:
+                    prox_reg = self.proximal_reg(w_0, finetuned_parameter_aug[i], self.prox_lam)
+                    loss_q_aug += prox_reg
+
         loss_q = torch.div(loss_q, task_num)
         self.writer.add_scalar("loss/original", loss_q, t)
         loss_q_aug = torch.div(loss_q_aug, task_num)
         self.writer.add_scalar("loss/augmented", loss_q_aug, t)
         self.writer.add_scalar("loss_difference", abs(loss_q - loss_q_aug), t)
         # Total Loss = Loss + Loss(aug) + Regularizer
-        loss_q += loss_q_aug
+        if not self.rm_augloss:
+            loss_q += loss_q_aug
 
         # Overwrite loss with the one calculated from augmented dataset if trad. augmentation is set.
         if self.traditional_augmentation:
@@ -286,6 +304,12 @@ class Meta(nn.Module):
 
         acc = num_corrects / (querysz * task_num)
         return acc
+
+
+class ResNet(Meta):
+    def __init__(self, args, config):
+        super(ResNet, self).__init__(args, config)
+        self.net = torch.hub.load("pytorch/vision:v0.10.0", "resnet18", pretrained=True)
 
 
 def main():

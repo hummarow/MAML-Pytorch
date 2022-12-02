@@ -6,7 +6,6 @@ import csv
 import random
 import glob
 import sys
-import random
 import functools
 import typing
 import torchvision.transforms.functional as TF
@@ -81,7 +80,6 @@ class MiniImagenet(Dataset):
             _, name = os.path.split(img)
             self.images[name] = img
         csvdata = self.loadCSV(os.path.join(root, mode + ".csv"))  # csv path
-        # self.data <- csvdata 속의 file class
         self.data = []
         self.img2label = {}
         for i, (k, v) in enumerate(csvdata.items()):

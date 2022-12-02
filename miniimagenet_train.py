@@ -19,6 +19,7 @@ from torch.optim import lr_scheduler
 from collections import defaultdict
 from tqdm import tqdm
 from meta import Meta
+from meta import ResNet
 
 
 TRAIN_EPISODES = 10000
@@ -33,8 +34,7 @@ VALIDATION_STARTING_POINT = 10000
 now = datetime.now()
 
 imagenet_path = "/home/bjk/Datasets/mini-imagenet/"
-MODEL_DIR = "./logs/models/" + now.strftime("%y%m%d_%H%M%S")
-Path(MODEL_DIR).mkdir(parents=True, exist_ok=True)
+TIME = now.strftime("%y%m%d_%H%M%S")
 
 # Tensorboard custom scalar layout
 layout = {
@@ -61,11 +61,6 @@ def mean_confidence_interval(data, confidence=0.95):
     return m, h
 
 
-# def mean_confidence_interval(accs, confidence=0.95):
-#     n = accs.shape[0]
-#     m, se = np.mean(accs), scipy.stats.sem(accs)
-#     h = se * scipy.stats.t._ppf((1 + confidence) / 2, n - 1)
-#     return m, h
 def parse_argument(kwargs):
     argparser = argparse.ArgumentParser()
     argparser.add_argument("--epoch", type=int, help="epoch number", default=6)
@@ -133,6 +128,7 @@ def parse_argument(kwargs):
     )
     argparser.add_argument(
         "--traditional_augmentation",
+        "--trad_aug",
         action="store_true",
         help="...",
         default=False,
@@ -142,6 +138,28 @@ def parse_argument(kwargs):
         action="store_true",
         help="add random horizontal flip augmentation",
         default=False,
+    )
+    argparser.add_argument(
+        "--rm_augloss",
+        action="store_true",
+        default=False,
+    )
+    argparser.add_argument(
+        "--prox_lam",
+        type=float,
+        help="Lambda for imaml proximal regularizer",
+        default=0,
+    )
+    argparser.add_argument(
+        "--prox_task",
+        type=int,
+        help="Apply proximal regularizer at task 0 (original), task 1 (augmented), or 2 (both)",
+        default=-1,
+    )
+    argparser.add_argument(
+        "--seed",
+        type=int,
+        default=-1,
     )
 
     args = argparse.Namespace()
@@ -159,27 +177,40 @@ def main(**kwargs):
     TRAIN_EPISODES = args.episode
     validation_num = args.repeat
     args.need_aug = args.aug | args.traditional_augmentation
+
+    MODEL_DIR = "./logs/models/" + (
+        "trad_aug" if args.traditional_augmentation else "aug" if args.aug else "org"
+    )
+    Path(MODEL_DIR).mkdir(parents=True, exist_ok=True)
+
     model_name = (
-        now.strftime("%H%M_")
-        + ("tradAug_" if args.traditional_augmentation else "")
-        + ("augmented_" if args.aug else "")
-        + (str(args.reg) + "_" if args.reg > 0 else "")
+        TIME
+        + "_"
+        # + ("tradAug_" if args.traditional_augmentation else "")
+        # + ("augmented_" if args.aug else "")
+        + ((str(args.reg) + "_" if args.reg > 0 else "") if args.aug else "")
         + "model.pt"
     )
     MODEL_PATH = os.path.join(MODEL_DIR, model_name)
 
-    seed = int(time.time())
+    # seed = int(time.time())
+    if args.seed == -1:
+        seed = random.choice([1004, 8282, 486])
+    else:
+        seed = args.seed
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
+    random.seed(seed)
 
     print(args)
+    print("Seed: {}".format(seed))
 
     config = [
-        ("conv2d", [32, 3, 3, 3, 1, 0]),
-        ("relu", [True]),
-        ("bn", [32]),
-        ("max_pool2d", [2, 2, 0]),
+        ("conv2d", [32, 3, 3, 3, 1, 0]),  # [ch_out, ch_in, kernel, kernel, stride, pad]
+        ("relu", [True]),  # [inplace]
+        ("bn", [32]),  # [ch_out]
+        ("max_pool2d", [2, 2, 0]),  # [kernel, stride, padding]
         ("conv2d", [32, 32, 3, 3, 1, 0]),
         ("relu", [True]),
         ("bn", [32]),
@@ -192,6 +223,18 @@ def main(**kwargs):
         ("relu", [True]),
         ("bn", [32]),
         ("max_pool2d", [2, 1, 0]),
+        ("flatten", []),
+        ("linear", [args.n_way, 32 * 5 * 5]),
+    ]
+
+    resnet_config = [
+        ("conv2d", [32, 3, 3, 3, 1, 0]),
+        ("max_pool2d", [3, 2, 0]),
+        ("res", []),
+        ("res", []),
+        ("res", []),
+        ("res", []),
+        ("avg_pool2d",),
         ("flatten", []),
         ("linear", [args.n_way, 32 * 5 * 5]),
     ]
@@ -215,11 +258,20 @@ def main(**kwargs):
     best_test_accs = [0] * validation_num
     best_step = 0
     checkpoint = None
-    t = -1
+
     for validation_iter in range(validation_num):
+        t = 0
         maml = Meta(args, config).to(device)
         print(validation_iter)
         for epoch in tqdm(range(args.epoch)):
+            if validation_iter > 0:
+                # seed = int(time.time())
+                # torch.manual_seed(seed)
+                # torch.cuda.manual_seed_all(seed)
+                # np.random.seed(seed)
+                mini.create_batch(TRAIN_EPISODES)
+                mini_val.create_batch(VALIDATION_EPISODES)
+                mini_test.create_batch(TEST_EPISODES)
             # fetch meta_num_episodes num of episode each time
             db = DataLoader(
                 mini,
@@ -229,7 +281,7 @@ def main(**kwargs):
                 pin_memory=True,
             )
             for step, data in enumerate(db):
-                t += 1  # Timestep Update
+                t += args.task_num  # Timestep Update
                 assert (len(data) == 4 and not args.need_aug) or (
                     len(data) == 6 and args.need_aug
                 )  # if augmentation is necessary, data contains x_spt_aug, x_qry_aug additionally.
@@ -269,7 +321,7 @@ def main(**kwargs):
                     writer.add_scalar("Accuracy/Train", accs, t)
 
                 # Evaluation with validation data
-                if t > VALIDATION_STARTING_POINT and step % VALIDATION_CYCLE == 0:
+                if step % VALIDATION_CYCLE == 0:
                     db_val = DataLoader(
                         mini_val,
                         1,
@@ -296,16 +348,16 @@ def main(**kwargs):
                     mean_val_accs.append(mean_acc)
                 # if step % PBAR_UPDATE_CYCLE == 0:
                 #     pbar.update(PBAR_UPDATE_CYCLE)
-            # Save the best model for given validation step
-            if mean_val_accs[-1] > best_val_acc:
-                best_val_acc = mean_val_accs[-1]
-                if checkpoint:
-                    del checkpoint
-                checkpoint = deepcopy(maml.state_dict())
-                torch.save(checkpoint, MODEL_PATH)
-                best_step = t
+                # Save the best model of given validation step
+                if mean_val_accs[-1] > best_val_acc:
+                    best_val_acc = mean_val_accs[-1]
+                    if checkpoint:
+                        del checkpoint
+                    checkpoint = deepcopy(maml.state_dict())
+                    torch.save(checkpoint, MODEL_PATH)
+                    best_step = t
         best_val_accs[validation_iter] = best_val_acc
-        # # Choose the best model
+        # Choose the best model
 
         # maml = Meta(args, config).to(device)
         maml.load_state_dict(checkpoint)
@@ -327,13 +379,19 @@ def main(**kwargs):
         print("Step: {}".format(best_step))
         print("Test: {}%".format(mean_test_acc * 100))
     print(
-        "Shot: {}\nAug: {}\nReg: {}\nFlip: {}".format(
-            str(args.k_spt), str(args.aug), str(args.reg), str(args.flip)
+        "Shot: {}\nAug: {}\nReg: {}\nFlip: {}\nTradAug: {}".format(
+            str(args.k_spt),
+            str(args.aug),
+            str(args.reg),
+            str(args.flip),
+            str(args.traditional_augmentation),
         )
     )
-    mean, ci = mean_confidence_interval(best_val_accs)
-    print("{}% +- {}%".format(mean * 100, ci * 100))
+    # mean, ci = mean_confidence_interval(best_val_accs)
+    # print("{}% +- {}%".format(mean * 100, ci * 100))
     mean, ci = mean_confidence_interval(best_test_accs)
+    print("Test Accuracies: ")
+    print(best_test_accs)
     print("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean * 100, ci * 100))
 
     return best_test_accs

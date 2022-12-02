@@ -4,7 +4,7 @@ import scipy.stats
 import miniimagenet_train
 from datetime import datetime
 
-EPOCH = 6
+EPOCH = 10
 
 
 def mean_confidence_interval(data, confidence=0.95):
@@ -26,23 +26,40 @@ if __name__ == "__main__":
         },
         1: {
             "epoch": EPOCH,
-            "reg": 0.05,
-            "qry_aug": True,
+            "reg": 0.01,
+            "qry_aug": False,
             "aug": True,
         },
         2: {
+            "epoch": EPOCH,
+            "reg": 0.01,
+            "qry_aug": False,
+            "aug": True,
+            "flip": True,
+        },
+        3: {
             "epoch": EPOCH,
             "reg": 0.0,
             "qry_aug": False,
             "aug": False,
             "traditional_augmentation": True,
         },
-        3: {
+        4: {
             "epoch": EPOCH,
             "aug": False,
             "qry_aug": False,
             "traditional_augmentation": False,
             "reg": 0.0,
+        },
+        5: {
+            "epoch": EPOCH,
+            "aug": False,
+            "qry_aug": False,
+            "traditional_augmentation": False,
+            "reg": 0.0,
+            "prox_lam": 0.5,
+            "prox_task": 2,
+            "update_step": 10,
         },
     }
 
