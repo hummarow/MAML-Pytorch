@@ -1,4 +1,5 @@
 import torch, os
+from torch import nn
 import numpy as np
 import scipy.stats
 import random, sys, pickle
@@ -6,7 +7,6 @@ import argparse
 import tensorboard
 import matplotlib.pyplot as plt
 import os
-import configs
 import typing
 import time
 from datetime import datetime
@@ -18,23 +18,24 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.optim import lr_scheduler
 from collections import defaultdict
 from tqdm import tqdm
+from ray import tune
+from ray.tune import CLIReporter
+from ray.tune.schedulers import ASHAScheduler
+
+import utils
 from meta import Meta
-from meta import ResNet
 
-
+# Train Configuration
 TRAIN_EPISODES = 10000
 VALIDATION_EPISODES = 100
 TEST_EPISODES = 600
-
-PBAR_UPDATE_CYCLE = 1000
 VALIDATION_CYCLE = 500
 
-VALIDATION_STARTING_POINT = 10000
+device = torch.device("cuda")
 
 now = datetime.now()
-
-imagenet_path = "/home/bjk/Datasets/mini-imagenet/"
 TIME = now.strftime("%y%m%d_%H%M%S")
+seed_list = [1004, 8282, 486, 404, 9797, 1010235, 2848, 10288, 8255, 5825]
 
 # Tensorboard custom scalar layout
 layout = {
@@ -52,159 +53,183 @@ layout = {
     },
 }
 
+imagenet_path = "./datasets/mini-imagenet/"
+# Ray Configuration
+ray_dir = "./raydata/"
+ray_config = {
+    "prox_lam": tune.uniform(0.005, 1.0),
+    "reg": tune.sample_from(lambda _: 0.0005 * np.random.randint(0, 20)),
+    "update_step": tune.choice([5, 10, 15]),
+}
 
-def mean_confidence_interval(data, confidence=0.95):
-    a = 1.0 * np.array(data)
-    n = len(a)
-    m, se = np.mean(a), scipy.stats.sem(a)
-    h = se * scipy.stats.t.ppf((1 + confidence) / 2.0, n - 1)
-    return m, h
 
+def train(val_iter: int, args, config, ray_config):
+    t = 0
+    best_val_acc = -float("inf")
+    mean_val_accs = []
+    num_test = 5
+    val_accs = [0] * VALIDATION_EPISODES
+    test_accs = [0] * TEST_EPISODES * num_test
+    best_val_acc = 0
+    best_step = 0
+    checkpoint = None
 
-def parse_argument(kwargs):
-    argparser = argparse.ArgumentParser()
-    argparser.add_argument("--epoch", type=int, help="epoch number", default=6)
-    argparser.add_argument("--n_way", type=int, help="n way", default=5)
-    argparser.add_argument("--k_spt", type=int, help="k shot for support set", default=1)
-    argparser.add_argument("--k_qry", type=int, help="k shot for query set", default=15)
-    argparser.add_argument("--imgsz", type=int, help="imgsz", default=84)
-    argparser.add_argument("--imgc", type=int, help="imgc", default=3)
-    argparser.add_argument(
-        "--task_num",
-        type=int,
-        help="meta batch size, namely task num",
-        default=4,
-    )
-    argparser.add_argument(
-        "--meta_lr",
-        type=float,
-        help="meta-level outer learning rate",
-        default=1e-3,
-    )
-    argparser.add_argument(
-        "--update_lr",
-        type=float,
-        help="task-level inner update learning rate",
-        default=0.01,
-    )
-    argparser.add_argument(
-        "--update_step",
-        type=int,
-        help="task-level inner update steps",
-        default=5,
-    )
-    argparser.add_argument(
-        "--episode",
-        type=int,
-        help="Number of training episodes per epoch",
-        default=10000,
-    )
-    argparser.add_argument(
-        "--repeat",
-        type=int,
-        help="number of validations",
-        default=10,
-    )
-    argparser.add_argument(
-        "--update_step_test",
-        type=int,
-        help="update steps for finetunning",
-        default=10,
-    )
+    maml = Meta(args, config, ray_config["prox_lam"], ray_config["reg"], ray_config["update_step"])
+    if torch.cuda.device_count() > 1:
+        maml = torch.nn.DataParallel(maml)
+    maml.to(device)
+    print(val_iter)
+    seed = seed_list[val_iter]
 
-    argparser.add_argument("--reg", type=float, help="coefficient for regularizer", default=1.0)
-    argparser.add_argument("--logdir", type=str, help="log directory for tensorboard", default="")
-    argparser.add_argument(
-        "--aug",
-        action="store_true",
-        help="add augmentation and measure weight distance between original data and augmented data",
-        default=False,
-    )
-    argparser.add_argument(
-        "--qry_aug",
-        action="store_true",
-        help="use augmented query set when meta-updating parameters",
-        default=False,
-    )
-    argparser.add_argument(
-        "--traditional_augmentation",
-        "--trad_aug",
-        action="store_true",
-        help="...",
-        default=False,
-    )
-    argparser.add_argument(
-        "--flip",
-        action="store_true",
-        help="add random horizontal flip augmentation",
-        default=False,
-    )
-    argparser.add_argument(
-        "--rm_augloss",
-        action="store_true",
-        default=False,
-    )
-    argparser.add_argument(
-        "--prox_lam",
-        type=float,
-        help="Lambda for imaml proximal regularizer",
-        default=0,
-    )
-    argparser.add_argument(
-        "--prox_task",
-        type=int,
-        help="Apply proximal regularizer at task 0 (original), task 1 (augmented), or 2 (both)",
-        default=-1,
-    )
-    argparser.add_argument(
-        "--seed",
-        type=int,
-        default=-1,
-    )
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
 
-    args = argparse.Namespace()
-    for i, k in kwargs.items():
-        vars(args)[i] = k
-    args = argparser.parse_args(namespace=args)
-    return args
+    if val_iter == 0:
+        # num_episodes here means total episode number
+        mini = MiniImagenet(imagenet_path, mode="train", num_episodes=args.episode, args=args)
+        mini_val = MiniImagenet(
+            imagenet_path, mode="val", num_episodes=VALIDATION_EPISODES, args=args
+        )
+        mini_test = MiniImagenet(imagenet_path, mode="test", num_episodes=TEST_EPISODES, args=args)
+
+    else:
+        mini.create_batch(TRAIN_EPISODES)
+        mini_val.create_batch(VALIDATION_EPISODES)
+        mini_test.create_batch(TEST_EPISODES)
+
+    for epoch in tqdm(range(args.epoch)):
+        # fetch meta_num_episodes num of episode each time
+        db = DataLoader(
+            mini,
+            args.task_num,
+            shuffle=True,
+            num_workers=1,
+            pin_memory=True,
+        )
+        for step, data in enumerate(db):
+            t += args.task_num  # Timestep Update
+            assert (len(data) == 4 and not args.need_aug) or (
+                len(data) == 6 and args.need_aug
+            )  # if augmentation is necessary, data contains x_spt_aug, x_qry_aug additionally.
+            if not args.need_aug:
+                (x_spt, y_spt, x_qry, y_qry) = data
+                x_spt_aug = None
+                x_qry_aug = None
+            else:
+                (
+                    x_spt,
+                    y_spt,
+                    x_qry,
+                    y_qry,
+                    x_spt_aug,
+                    x_qry_aug,
+                ) = data  # Length asserted (safe)
+                x_spt_aug = x_spt_aug.to(device)
+                x_qry_aug = x_qry_aug.to(device)
+
+            x_spt, y_spt, x_qry, y_qry = (
+                x_spt.to(device),
+                y_spt.to(device),
+                x_qry.to(device),
+                y_qry.to(device),
+            )
+            accs = maml(
+                x_spt,
+                y_spt,
+                x_qry,
+                y_qry,
+                t,
+                spt_aug=x_spt_aug,
+                qry_aug=x_qry_aug,
+            )
+
+            if step % 30 == 0:
+                writer.add_scalar("Accuracy/Train", accs, t)
+
+            # Evaluation with validation data
+            if step % VALIDATION_CYCLE == 0:
+                db_val = DataLoader(
+                    mini_val,
+                    1,
+                    shuffle=True,
+                    num_workers=1,
+                    pin_memory=True,
+                )
+
+                for i, (x_spt, y_spt, x_qry, y_qry) in enumerate(db_val):
+                    x_spt, y_spt, x_qry, y_qry = (
+                        x_spt.squeeze(0).to(device),
+                        y_spt.squeeze(0).to(device),
+                        x_qry.squeeze(0).to(device),
+                        y_qry.squeeze(0).to(device),
+                    )
+
+                    acc = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
+                    val_accs[i] = acc
+
+                # [b, update_step+1]
+                mean_acc = np.array(val_accs).mean(axis=0).astype(np.float16)
+                writer.add_scalar("Accuracy", mean_acc, t)
+                writer.add_scalar("Accuracy/Val", mean_acc, t)
+                mean_val_accs.append(mean_acc)
+            # Save the best model of given validation step
+            if mean_val_accs[-1] > best_val_acc:
+                best_val_acc = mean_val_accs[-1]
+                if checkpoint:
+                    del checkpoint
+                checkpoint = deepcopy(maml.state_dict())
+                torch.save(checkpoint, MODEL_PATH)
+                best_step = t
+    # Choose the best model
+
+    # maml = Meta(args, config).to(device)
+    for i in range(num_test):
+        maml.load_state_dict(checkpoint)
+        db_test = DataLoader(mini_test, 1, shuffle=True, num_workers=1, pin_memory=True)
+        for j, (x_spt, y_spt, x_qry, y_qry) in enumerate(db_test):
+            x_spt, y_spt, x_qry, y_qry = (
+                x_spt.squeeze(0).to(device),
+                y_spt.squeeze(0).to(device),
+                x_qry.squeeze(0).to(device),
+                y_qry.squeeze(0).to(device),
+            )
+
+            acc = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
+            test_accs[num_test * i + j] = acc
+    del maml
+
+    mean_test_acc = np.array(test_accs).mean(axis=0).astype(np.float16)
+    print("Step: {}".format(best_step))
+    print("Test: {}%".format(mean_test_acc * 100))
+    print(mean_test_acc)
+    return mean_test_acc, best_val_acc
 
 
 def main(**kwargs):
     """
     return list of validation loss
     """
-    args = parse_argument(kwargs)
+    args = utils.parse_argument(kwargs)
     TRAIN_EPISODES = args.episode
     validation_num = args.repeat
+    best_val_accs = [0] * validation_num
     args.need_aug = args.aug | args.traditional_augmentation
-
     MODEL_DIR = "./logs/models/" + (
         "trad_aug" if args.traditional_augmentation else "aug" if args.aug else "org"
     )
     Path(MODEL_DIR).mkdir(parents=True, exist_ok=True)
-
     model_name = (
         TIME
         + "_"
-        # + ("tradAug_" if args.traditional_augmentation else "")
-        # + ("augmented_" if args.aug else "")
+        + ("tradAug_" if args.traditional_augmentation else "")
+        + ("augmented_" if args.aug else "")
         + ((str(args.reg) + "_" if args.reg > 0 else "") if args.aug else "")
         + "model.pt"
     )
     MODEL_PATH = os.path.join(MODEL_DIR, model_name)
 
-    # seed = int(time.time())
-    if args.seed == -1:
-        seed = random.choice([1004, 8282, 486])
-    else:
-        seed = args.seed
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-
-    print(args)
-    print("Seed: {}".format(seed))
+    utils.print_args(args)
 
     config = [
         ("conv2d", [32, 3, 3, 3, 1, 0]),  # [ch_out, ch_in, kernel, kernel, stride, pad]
@@ -227,29 +252,10 @@ def main(**kwargs):
         ("linear", [args.n_way, 32 * 5 * 5]),
     ]
 
-    resnet_config = [
-        ("conv2d", [32, 3, 3, 3, 1, 0]),
-        ("max_pool2d", [3, 2, 0]),
-        ("res", []),
-        ("res", []),
-        ("res", []),
-        ("res", []),
-        ("avg_pool2d",),
-        ("flatten", []),
-        ("linear", [args.n_way, 32 * 5 * 5]),
-    ]
-
-    device = torch.device("cuda")
-
-    # num_episodes here means total episode number
-    mini = MiniImagenet(imagenet_path, mode="train", num_episodes=TRAIN_EPISODES, args=args)
-    mini_val = MiniImagenet(imagenet_path, mode="val", num_episodes=VALIDATION_EPISODES, args=args)
-    mini_test = MiniImagenet(imagenet_path, mode="test", num_episodes=TEST_EPISODES, args=args)
-
-    log_path = configs.get_path(args.logdir, args.aug, args.reg)
-
+    log_path = utils.get_path(args.logdir, args.aug, args.reg)
     writer = SummaryWriter(log_path)
     writer.add_custom_scalars(layout)
+<<<<<<< HEAD
     best_val_acc = -float("inf")
     mean_val_accs = []
     val_accs = [0] * VALIDATION_EPISODES
@@ -383,6 +389,18 @@ def main(**kwargs):
         )
     )
     print("Step: {}".format(best_step))
+=======
+
+    best_test_accs = [0] * validation_num
+
+    for val_iter in range(validation_num):
+        mean_test_acc = train()
+        best_test_accs[val_iter] = mean_test_acc
+    utils.print_args(args)
+    mean, ci = utils.mean_confidence_interval(best_test_accs)
+    print("Test Accuracies: ")
+    print(best_test_accs)
+>>>>>>> seperate
     print("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean * 100, ci * 100))
 
     return mean, ci
