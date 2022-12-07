@@ -258,96 +258,92 @@ def main(**kwargs):
     best_test_accs = [0] * validation_num
     best_step = 0
     checkpoint = None
-
-    for validation_iter in range(validation_num):
-        t = 0
-        maml = Meta(args, config).to(device)
-        print(validation_iter)
-        for epoch in tqdm(range(args.epoch)):
-            if validation_iter > 0:
-                # seed = int(time.time())
-                # torch.manual_seed(seed)
-                # torch.cuda.manual_seed_all(seed)
-                # np.random.seed(seed)
-                mini.create_batch(TRAIN_EPISODES)
-                mini_val.create_batch(VALIDATION_EPISODES)
-                mini_test.create_batch(TEST_EPISODES)
-            # fetch meta_num_episodes num of episode each time
-            db = DataLoader(
-                mini,
-                args.task_num,
-                shuffle=True,
-                num_workers=1,
-                pin_memory=True,
-            )
-            for step, data in enumerate(db):
-                t += args.task_num  # Timestep Update
-                assert (len(data) == 4 and not args.need_aug) or (
-                    len(data) == 6 and args.need_aug
-                )  # if augmentation is necessary, data contains x_spt_aug, x_qry_aug additionally.
-                if not args.need_aug:
-                    (x_spt, y_spt, x_qry, y_qry) = data
-                    x_spt_aug = None
-                    x_qry_aug = None
-                else:
-                    (
-                        x_spt,
-                        y_spt,
-                        x_qry,
-                        y_qry,
-                        x_spt_aug,
-                        x_qry_aug,
-                    ) = data  # Length asserted (safe)
-                    x_spt_aug = x_spt_aug.to(device)
-                    x_qry_aug = x_qry_aug.to(device)
-
-                x_spt, y_spt, x_qry, y_qry = (
-                    x_spt.to(device),
-                    y_spt.to(device),
-                    x_qry.to(device),
-                    y_qry.to(device),
-                )
-                accs = maml(
+    ##########################
+    t = 0
+    maml = Meta(args, config).to(device)
+    for epoch in tqdm(range(args.epoch)):
+        # seed = int(time.time())
+        # torch.manual_seed(seed)
+        # torch.cuda.manual_seed_all(seed)
+        # np.random.seed(seed)
+        mini.create_batch(TRAIN_EPISODES)
+        mini_val.create_batch(VALIDATION_EPISODES)
+        mini_test.create_batch(TEST_EPISODES)
+        # fetch meta_num_episodes num of episode each time
+        db = DataLoader(
+            mini,
+            args.task_num,
+            shuffle=True,
+            num_workers=1,
+            pin_memory=True,
+        )
+        for step, data in enumerate(db):
+            t += args.task_num  # Timestep Update
+            assert (len(data) == 4 and not args.need_aug) or (
+                len(data) == 6 and args.need_aug
+            )  # if augmentation is necessary, data contains x_spt_aug, x_qry_aug additionally.
+            if not args.need_aug:
+                (x_spt, y_spt, x_qry, y_qry) = data
+                x_spt_aug = None
+                x_qry_aug = None
+            else:
+                (
                     x_spt,
                     y_spt,
                     x_qry,
                     y_qry,
-                    t,
-                    spt_aug=x_spt_aug,
-                    qry_aug=x_qry_aug,
+                    x_spt_aug,
+                    x_qry_aug,
+                ) = data  # Length asserted (safe)
+                x_spt_aug = x_spt_aug.to(device)
+                x_qry_aug = x_qry_aug.to(device)
+
+            x_spt, y_spt, x_qry, y_qry = (
+                x_spt.to(device),
+                y_spt.to(device),
+                x_qry.to(device),
+                y_qry.to(device),
+            )
+            accs = maml(
+                x_spt,
+                y_spt,
+                x_qry,
+                y_qry,
+                t,
+                spt_aug=x_spt_aug,
+                qry_aug=x_qry_aug,
+            )
+
+            if step % 30 == 0:
+                writer.add_scalar("Accuracy/Train", accs, t)
+
+            # Evaluation with validation data
+            if step % VALIDATION_CYCLE == 0:
+                db_val = DataLoader(
+                    mini_val,
+                    1,
+                    shuffle=True,
+                    num_workers=1,
+                    pin_memory=True,
                 )
 
-                if step % 30 == 0:
-                    writer.add_scalar("Accuracy/Train", accs, t)
-
-                # Evaluation with validation data
-                if step % VALIDATION_CYCLE == 0:
-                    db_val = DataLoader(
-                        mini_val,
-                        1,
-                        shuffle=True,
-                        num_workers=1,
-                        pin_memory=True,
+                for i, (x_spt, y_spt, x_qry, y_qry) in enumerate(db_val):
+                    x_spt, y_spt, x_qry, y_qry = (
+                        x_spt.squeeze(0).to(device),
+                        y_spt.squeeze(0).to(device),
+                        x_qry.squeeze(0).to(device),
+                        y_qry.squeeze(0).to(device),
                     )
 
-                    for i, (x_spt, y_spt, x_qry, y_qry) in enumerate(db_val):
-                        x_spt, y_spt, x_qry, y_qry = (
-                            x_spt.squeeze(0).to(device),
-                            y_spt.squeeze(0).to(device),
-                            x_qry.squeeze(0).to(device),
-                            y_qry.squeeze(0).to(device),
-                        )
+                    acc = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
+                    val_accs[i] = acc
 
-                        acc = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
-                        val_accs[i] = acc
+                # [b, update_step+1]
+                mean_acc = np.array(val_accs).mean(axis=0).astype(np.float16)
+                writer.add_scalar("Accuracy", mean_acc, t)
+                writer.add_scalar("Accuracy/Val", mean_acc, t)
+                mean_val_accs.append(mean_acc)
 
-                    # [b, update_step+1]
-                    mean_acc = np.array(val_accs).mean(axis=0).astype(np.float16)
-                    writer.add_scalar("Accuracy", mean_acc, t)
-                    writer.add_scalar("Accuracy/Val", mean_acc, t)
-                    mean_val_accs.append(mean_acc)
-                # if step % PBAR_UPDATE_CYCLE == 0:
-                #     pbar.update(PBAR_UPDATE_CYCLE)
                 # Save the best model of given validation step
                 if mean_val_accs[-1] > best_val_acc:
                     best_val_acc = mean_val_accs[-1]
@@ -356,28 +352,27 @@ def main(**kwargs):
                     checkpoint = deepcopy(maml.state_dict())
                     torch.save(checkpoint, MODEL_PATH)
                     best_step = t
-        best_val_accs[validation_iter] = best_val_acc
-        # Choose the best model
+    # Choose the best model
 
-        # maml = Meta(args, config).to(device)
-        maml.load_state_dict(checkpoint)
-        db_test = DataLoader(mini_test, 1, shuffle=True, num_workers=1, pin_memory=True)
-        for i, (x_spt, y_spt, x_qry, y_qry) in enumerate(db_test):
-            x_spt, y_spt, x_qry, y_qry = (
-                x_spt.squeeze(0).to(device),
-                y_spt.squeeze(0).to(device),
-                x_qry.squeeze(0).to(device),
-                y_qry.squeeze(0).to(device),
-            )
-
-            acc = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
-            test_accs[i] = acc
-        del maml
-
-        mean_test_acc = np.array(test_accs).mean(axis=0).astype(np.float16)
-        best_test_accs[validation_iter] = mean_test_acc
-        print("Step: {}".format(best_step))
-        print("Test: {}%".format(mean_test_acc * 100))
+    # maml = Meta(args, config).to(device)
+    # Get the best model and test
+    maml.load_state_dict(checkpoint)
+    db_test = DataLoader(mini_test, 1, shuffle=True, num_workers=1, pin_memory=True)
+    for i, (x_spt, y_spt, x_qry, y_qry) in enumerate(db_test):
+        x_spt, y_spt, x_qry, y_qry = (
+            x_spt.squeeze(0).to(device),
+            y_spt.squeeze(0).to(device),
+            x_qry.squeeze(0).to(device),
+            y_qry.squeeze(0).to(device),
+        )
+        # Save all accs
+        acc = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
+        test_accs[i] = acc
+    del maml
+    # Get mean and std from all accs
+    mean, ci = mean_confidence_interval(test_accs)
+    # print("Test Accuracies: ")
+    # print(test_accs)
     print(
         "Shot: {}\nAug: {}\nReg: {}\nFlip: {}\nTradAug: {}".format(
             str(args.k_spt),
@@ -387,14 +382,10 @@ def main(**kwargs):
             str(args.traditional_augmentation),
         )
     )
-    # mean, ci = mean_confidence_interval(best_val_accs)
-    # print("{}% +- {}%".format(mean * 100, ci * 100))
-    mean, ci = mean_confidence_interval(best_test_accs)
-    print("Test Accuracies: ")
-    print(best_test_accs)
+    print("Step: {}".format(best_step))
     print("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean * 100, ci * 100))
 
-    return best_test_accs
+    return mean, ci
 
 
 if __name__ == "__main__":

@@ -78,6 +78,4 @@ if __name__ == "__main__":
 
     setting = settings[setting_number]
 
-    best_test_accs = miniimagenet_train.main(**setting)
-    if len(best_test_accs) < 10:
-        print("Test Accuracies: ", best_test_accs)
+    miniimagenet_train.main(**setting)
