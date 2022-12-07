@@ -11,6 +11,7 @@ import typing
 import time
 from datetime import datetime
 from pathlib import Path
+from functools import partial
 from copy import deepcopy
 from MiniImagenet import MiniImagenet
 from torch.utils.data import DataLoader
@@ -63,7 +64,7 @@ ray_config = {
 }
 
 
-def train(val_iter: int, args, config, ray_config, model_path):
+def train(config, val_iter, args, model_config, model_path, checkpoint_dir=None):
     t = 0
     best_val_acc = -float("inf")
     mean_val_accs = []
@@ -77,8 +78,11 @@ def train(val_iter: int, args, config, ray_config, model_path):
     writer = SummaryWriter(log_path)
     writer.add_custom_scalars(layout)
     MODEL_PATH = model_path
+    print(config)
+    print(model_config)
+    print(config["reg"])
 
-    maml = Meta(args, config, ray_config["prox_lam"], ray_config["reg"], ray_config["update_step"])
+    maml = Meta(args, model_config, config["prox_lam"], config["reg"], config["update_step"])
     if torch.cuda.device_count() > 1:
         maml = torch.nn.DataParallel(maml)
     maml.to(device)
@@ -235,7 +239,7 @@ def main(**kwargs):
 
     utils.print_args(args)
 
-    config = [
+    model_config = [
         ("conv2d", [32, 3, 3, 3, 1, 0]),  # [ch_out, ch_in, kernel, kernel, stride, pad]
         ("relu", [True]),  # [inplace]
         ("bn", [32]),  # [ch_out]
@@ -256,18 +260,43 @@ def main(**kwargs):
         ("linear", [args.n_way, 32 * 5 * 5]),
     ]
 
+    ray_scheduler = ASHAScheduler(
+        metric="loss",
+        mode="min",
+    )
+    reporter = CLIReporter(metric_columns=["loss", "accuracy", "training_iteration"])
     best_test_accs = [0] * validation_num
 
     for val_iter in range(validation_num):
-        mean_test_acc = train(val_iter, args, config, ray_config, MODEL_PATH)
-        best_test_accs[val_iter] = mean_test_acc
-    utils.print_args(args)
-    mean, ci = utils.mean_confidence_interval(best_test_accs)
-    print("Test Accuracies: ")
-    print(best_test_accs)
-    print("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean * 100, ci * 100))
+        # mean_test_acc = tune.run(
+        result = tune.run(
+            partial(
+                train,
+                val_iter=val_iter,
+                args=args,
+                model_config=model_config,
+                model_path=MODEL_PATH,
+            ),
+            resources_per_trial={"cpu": 8, "gpu": 1},
+            config=ray_config,
+            num_samples=1,
+            scheduler=ray_scheduler,
+            progress_reporter=reporter,
+            # checkpoint_at_end=True,
+        )
+    best_trial = result.get_best_trial("loss", "min", "last")
+    print("Best trial config: {}".format(best_trial.config))
+    print("Best trial final validation loss: {}".format(best_trial.last_result["loss"]))
+    print("Best trial final validation accuracy: {}".format(best_trial.last_result["accuracy"]))
 
-    return best_test_accs
+    #     best_test_accs[val_iter] = mean_test_acc
+    # utils.print_args(args)
+    # mean, ci = utils.mean_confidence_interval(best_test_accs)
+    # print("Test Accuracies: ")
+    # print(best_test_accs)
+    # print("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean * 100, ci * 100))
+
+    # return best_test_accs
 
 
 if __name__ == "__main__":

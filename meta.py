@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import os
-import configs
+import utils
 import typing
 from torch import nn
 from torch import optim
@@ -42,7 +42,7 @@ class Meta(nn.Module):
 
         self.net = Learner(config, args.imgc, args.imgsz)
         self.meta_optim = optim.Adam(self.net.parameters(), lr=self.meta_lr)
-        log_path = configs.get_path(args.logdir, args.aug, args.reg)
+        log_path = utils.get_path(args.logdir, args.aug, args.reg)
         self.writer = SummaryWriter(log_path)
 
     def clip_grad_by_norm_(self, grad, max_norm):

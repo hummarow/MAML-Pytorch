@@ -133,7 +133,7 @@ def parse_argument(kwargs):
 
 
 def print_args(args):
-    if args.trad_aug:
+    if args.traditional_augmentation:
         print("Traditional Augmentation")
     if args.aug:
         print("Augmentation")
