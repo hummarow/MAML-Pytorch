@@ -63,7 +63,7 @@ ray_config = {
 }
 
 
-def train(val_iter: int, args, config, ray_config):
+def train(val_iter: int, args, config, ray_config, model_path):
     t = 0
     best_val_acc = -float("inf")
     mean_val_accs = []
@@ -73,6 +73,10 @@ def train(val_iter: int, args, config, ray_config):
     best_val_acc = 0
     best_step = 0
     checkpoint = None
+    log_path = utils.get_path(args.logdir, args.aug, args.reg)
+    writer = SummaryWriter(log_path)
+    writer.add_custom_scalars(layout)
+    MODEL_PATH = model_path
 
     maml = Meta(args, config, ray_config["prox_lam"], ray_config["reg"], ray_config["update_step"])
     if torch.cuda.device_count() > 1:
@@ -196,14 +200,14 @@ def train(val_iter: int, args, config, ray_config):
             )
 
             acc = maml.finetunning(x_spt, y_spt, x_qry, y_qry)
-            test_accs[num_test * i + j] = acc
+            test_accs[len(db_test) * i + j] = acc
     del maml
 
     mean_test_acc = np.array(test_accs).mean(axis=0).astype(np.float16)
     print("Step: {}".format(best_step))
     print("Test: {}%".format(mean_test_acc * 100))
     print(mean_test_acc)
-    return mean_test_acc, best_val_acc
+    return mean_test_acc
 
 
 def main(**kwargs):
@@ -252,14 +256,10 @@ def main(**kwargs):
         ("linear", [args.n_way, 32 * 5 * 5]),
     ]
 
-    log_path = utils.get_path(args.logdir, args.aug, args.reg)
-    writer = SummaryWriter(log_path)
-    writer.add_custom_scalars(layout)
-
     best_test_accs = [0] * validation_num
 
     for val_iter in range(validation_num):
-        mean_test_acc = train()
+        mean_test_acc = train(val_iter, args, config, ray_config, MODEL_PATH)
         best_test_accs[val_iter] = mean_test_acc
     utils.print_args(args)
     mean, ci = utils.mean_confidence_interval(best_test_accs)
