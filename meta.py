@@ -18,7 +18,7 @@ class Meta(nn.Module):
     Meta Learner
     """
 
-    def __init__(self, args, config):
+    def __init__(self, args, config, prox_lam=-1, reg=-1, update_step=-1):
         """
 
         :param args:
@@ -29,15 +29,15 @@ class Meta(nn.Module):
         self.meta_lr = args.meta_lr
         self.n_way = args.n_way
         self.task_num = args.task_num
-        self.update_step = args.update_step
+        self.update_step = args.update_step if update_step == -1 else update_step
         self.update_step_test = args.update_step_test
-        self.reg = args.reg
+        self.reg = args.reg if reg == -1 else reg
         self.aug = args.aug
         self.qry_aug = args.qry_aug
         self.traditional_augmentation = args.traditional_augmentation
         self.need_aug = args.need_aug
         self.rm_augloss = args.rm_augloss
-        self.prox_lam = args.prox_lam
+        self.prox_lam = args.prox_lam if prox_lam == -1 else prox_lam
         self.prox_task = args.prox_task
 
         self.net = Learner(config, args.imgc, args.imgsz)
