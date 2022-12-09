@@ -51,6 +51,8 @@ class MiniImagenet(Dataset):
         :param resize: resize to
         :param startidx: start to index label from startidx
         """
+        if mode == "train":
+            print(num_episodes)
 
         self.num_episodes = num_episodes  # batch of set, not batch of imgs
         self.n_way = args.n_way  # n-way
@@ -192,6 +194,7 @@ class MiniImagenet(Dataset):
 
             self.support_x_batch.append(support_x)  # append set to current sets
             self.query_x_batch.append(query_x)  # append sets to current sets
+        print("batch length ", len(self.support_x_batch))
 
     def __getitem__(self, index):
         """

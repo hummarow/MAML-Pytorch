@@ -90,6 +90,8 @@ def train(val_iter, args, model_config, dataloaders, model_path, writer):
             num_workers=1,
             pin_memory=True,
         )
+        print(len(db))
+        exit()
         for step, data in enumerate(db):
             t += 1  # Timestep Update
             assert (len(data) == 4 and not args.need_aug) or (
@@ -244,6 +246,8 @@ def main(**kwargs):
 
     best_test_accs = [0] * validation_num
 
+    print(args.episode)
+    print(args.task_num)
     mini = MiniImagenet(
         imagenet_path, mode="train", num_episodes=args.episode * args.task_num, args=args
     )
