@@ -197,7 +197,7 @@ def main(**kwargs):
     return list of validation loss
     """
     args = utils.parse_argument(kwargs)
-    TRAIN_EPISODES = args.episode
+    TRAIN_EPISODES = args.episode * args.task_num
     validation_num = args.repeat
     best_val_accs = [0] * validation_num
     args.need_aug = args.aug | args.traditional_augmentation
@@ -244,9 +244,7 @@ def main(**kwargs):
 
     best_test_accs = [0] * validation_num
 
-    mini = MiniImagenet(
-        imagenet_path, mode="train", num_episodes=args.episode * args.task_num, args=args
-    )
+    mini = MiniImagenet(imagenet_path, mode="train", num_episodes=TRAIN_EPISODES, args=args)
     mini_val = MiniImagenet(imagenet_path, mode="val", num_episodes=VALIDATION_EPISODES, args=args)
     mini_test = MiniImagenet(imagenet_path, mode="test", num_episodes=TEST_EPISODES, args=args)
 
