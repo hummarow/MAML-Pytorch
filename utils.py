@@ -1,6 +1,8 @@
 import typing
 import os
 import argparse
+import numpy as np
+import scipy.stats
 
 
 def get_path(logdir: str, aug=False, reg=0.0):
@@ -133,23 +135,28 @@ def parse_argument(kwargs):
 
 
 def print_args(args):
-    if args.trad_aug:
-        print("Traditional Augmentation")
+    msg = ""
+    if args.traditional_augmentation:
+        msg += "Traditional Augmentation\n"
     if args.aug:
-        print("Augmentation")
+        msg += "Augmentation\n"
+        if args.reg > 0:
+            msg += "reg: {}\n".format(args.reg)
     if args.flip:
-        print("Flip")
-    if args.reg > 0:
-        print("reg: {}".format(args.reg))
+        msg += "Flip\n"
     if args.rm_augloss:
-        print("Original Loss only")
+        msg += "Original Loss only\n"
     if args.prox_lam > 0:
-        print("iMAML")
+        msg += "iMAML\n"
     if args.prox_task != -1:
-        print("Prox Reg applied to ", end="")
+        msg += "Prox Reg applied to "
         if args.prox_task == 0:
-            print("original dataset only")
+            msg += "original dataset only\n"
         elif args.prox_task == 1:
-            print("augmented dataset only")
+            msg += "augmented dataset only\n"
         else:
-            print("both of the datasets")
+            msg += "both of the datasets\n"
+    if msg == "":
+        print("Original MAML")
+    else:
+        print(msg)

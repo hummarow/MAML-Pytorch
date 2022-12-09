@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import os
-import configs
+import utils
 import typing
 from torch import nn
 from torch import optim
@@ -18,7 +18,7 @@ class Meta(nn.Module):
     Meta Learner
     """
 
-    def __init__(self, args, config, prox_lam=-1, reg=-1, update_step=-1):
+    def __init__(self, args, config):
         """
 
         :param args:
@@ -29,20 +29,20 @@ class Meta(nn.Module):
         self.meta_lr = args.meta_lr
         self.n_way = args.n_way
         self.task_num = args.task_num
-        self.update_step = args.update_step if update_step == -1 else update_step
+        self.update_step = args.update_step
         self.update_step_test = args.update_step_test
-        self.reg = args.reg if reg == -1 else reg
+        self.reg = args.reg
         self.aug = args.aug
         self.qry_aug = args.qry_aug
         self.traditional_augmentation = args.traditional_augmentation
         self.need_aug = args.need_aug
         self.rm_augloss = args.rm_augloss
-        self.prox_lam = args.prox_lam if prox_lam == -1 else prox_lam
+        self.prox_lam = args.prox_lam
         self.prox_task = args.prox_task
 
         self.net = Learner(config, args.imgc, args.imgsz)
         self.meta_optim = optim.Adam(self.net.parameters(), lr=self.meta_lr)
-        log_path = configs.get_path(args.logdir, args.aug, args.reg)
+        log_path = utils.get_path(args.logdir, args.aug, args.reg)
         self.writer = SummaryWriter(log_path)
 
     def clip_grad_by_norm_(self, grad, max_norm):

@@ -45,7 +45,7 @@ if __name__ == "__main__":
             "traditional_augmentation": True,
         },
         4: {
-            "epoch": EPOCH,
+            "epoch": 6,
             "aug": False,
             "qry_aug": False,
             "traditional_augmentation": False,
