@@ -160,3 +160,4 @@ def print_args(args):
         print("Original MAML")
     else:
         print(msg)
+        print("{} Way {} Shot".format(args.n_way, args.k_spt))

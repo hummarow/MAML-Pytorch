@@ -91,7 +91,7 @@ def train(val_iter, args, model_config, dataloaders, model_path, writer):
             pin_memory=True,
         )
         for step, data in enumerate(db):
-            t += args.task_num  # Timestep Update
+            t += 1  # Timestep Update
             assert (len(data) == 4 and not args.need_aug) or (
                 len(data) == 6 and args.need_aug
             )  # if augmentation is necessary, data contains x_spt_aug, x_qry_aug additionally.
