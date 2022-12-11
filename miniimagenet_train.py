@@ -20,7 +20,6 @@ import utils
 from meta import Meta
 
 # Train Configuration
-TRAIN_EPISODES = 10000
 VALIDATION_EPISODES = 100
 TEST_EPISODES = 600
 VALIDATION_CYCLE = 500
@@ -78,7 +77,7 @@ def train(val_iter, args, model_config, dataloaders, model_path, writer):
     mini, mini_val, mini_test = dataloaders
 
     if val_iter > 0:
-        mini.create_batch(TRAIN_EPISODES)
+        mini.create_batch(mini.num_episodes)
         mini_val.create_batch(VALIDATION_EPISODES)
 
     for epoch in tqdm(range(args.epoch)):
