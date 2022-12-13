@@ -138,6 +138,17 @@ def parse_argument(kwargs):
         type=int,
         default=-1,
     )
+    argparser.add_argument(
+        "--chaser_lr",
+        type=float,
+        default=1e-3,
+    )
+    argparser.add_argument(
+        "--bmaml",
+        action="store_true",
+        help="Bmaml loss only",
+        default=False,
+    )
 
     args = argparse.Namespace()
     for i, k in kwargs.items():

@@ -41,6 +41,8 @@ class Meta(nn.Module):
         self.prox_task = args.prox_task
         self.chaser_lam = args.chaser_lam
         self.chaser_task = args.chaser_task
+        self.chaser_lr = args.chaser_lr
+        self.bmaml = args.bmaml
 
         self.net = Learner(config, args.imgc, args.imgsz)
         self.meta_optim = optim.Adam(self.net.parameters(), lr=self.meta_lr)
@@ -178,7 +180,8 @@ class Meta(nn.Module):
             # Calculate loss with query data and updated parameter
             logits_q = self.net(x_qry[i], finetuned_parameter[i], bn_training=True)
             _task_loss = F.cross_entropy(logits_q, y_qry[i])
-            loss_q += _task_loss  # Sum of losses of all tasks
+            if not self.bmaml:
+                loss_q += _task_loss  # Sum of losses of all tasks
 
             # iMAML proximal regularizer
             if (self.prox_task == 0 or self.prox_task == 2) and self.prox_lam > 0:
@@ -196,7 +199,7 @@ class Meta(nn.Module):
                 )
                 leader = list(
                     map(
-                        lambda p: p[1] - self.update_lr * p[0],
+                        lambda p: p[1] - self.chaser_lr * p[0],
                         zip(grad, finetuned_parameter[i]),
                     )
                 )
@@ -251,7 +254,7 @@ class Meta(nn.Module):
                     )
                     leader = list(
                         map(
-                            lambda p: p[1] - self.update_lr * p[0],
+                            lambda p: p[1] - self.chaser_lr * p[0],
                             zip(grad, finetuned_parameter_aug[i]),
                         )
                     )
@@ -264,7 +267,7 @@ class Meta(nn.Module):
         self.writer.add_scalar("loss/augmented", loss_q_aug, t)
         self.writer.add_scalar("loss_difference", abs(loss_q - loss_q_aug), t)
         # Total Loss = Loss + Loss(aug) + Regularizer
-        if not self.rm_augloss:
+        if not self.bmaml and not self.rm_augloss:
             loss_q += loss_q_aug
 
         # Overwrite loss with the one calculated from augmented dataset if trad. augmentation is set.
