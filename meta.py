@@ -203,7 +203,7 @@ class Meta(nn.Module):
                         zip(grad, finetuned_parameter[i]),
                     )
                 )
-                chaser_reg = self.chaser_loss(chaser, leader)
+                chaser_reg = self.chaser_loss(chaser, leader, self.chaser_lam)
                 loss_q += chaser_reg
 
             with torch.no_grad():
@@ -258,7 +258,7 @@ class Meta(nn.Module):
                             zip(grad, finetuned_parameter_aug[i]),
                         )
                     )
-                    chaser_reg = self.chaser_loss(chaser, leader)
+                    chaser_reg = self.chaser_loss(chaser, leader, self.chaser_lam)
                     loss_q += chaser_reg
 
         loss_q = torch.div(loss_q, task_num)
