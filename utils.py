@@ -122,6 +122,18 @@ def parse_argument(kwargs):
         default=-1,
     )
     argparser.add_argument(
+        "--chaser_lam",
+        type=float,
+        help="Lambda for bmaml chaser loss",
+        default=0,
+    )
+    argparser.add_argument(
+        "--chaser_task",
+        type=int,
+        help="Apply proximal regularizer at task 0 (original), task 1 (augmented), or 2 (both)",
+        default=-1,
+    )
+    argparser.add_argument(
         "--seed",
         type=int,
         default=-1,
@@ -161,3 +173,11 @@ def print_args(args):
     else:
         print(msg)
     print("{} Way {} Shot".format(args.n_way, args.k_spt))
+
+
+if __name__ == "__main__":
+    import ast
+
+    a = input()
+    a = ast.literal_eval(a)
+    print(mean_confidence_interval(a))

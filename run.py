@@ -1,18 +1,7 @@
-import numpy as np
 import pprint
-import scipy.stats
 import miniimagenet_train
-from datetime import datetime
 
-EPOCH = 10
-
-
-def mean_confidence_interval(data, confidence=0.95):
-    a = 1.0 * np.array(data)
-    n = len(a)
-    m, se = np.mean(a), scipy.stats.sem(a)
-    h = se * scipy.stats.t.ppf((1 + confidence) / 2.0, n - 1)
-    return m, h
+EPOCH = 8
 
 
 if __name__ == "__main__":
@@ -21,40 +10,34 @@ if __name__ == "__main__":
         0: {
             "epoch": EPOCH,
             "reg": 0.0,
-            "qry_aug": False,
             "aug": True,
         },
         1: {
             "epoch": EPOCH,
             "reg": 0.01,
-            "qry_aug": False,
             "aug": True,
         },
         2: {
             "epoch": EPOCH,
             "reg": 0.01,
-            "qry_aug": False,
             "aug": True,
             "flip": True,
         },
         3: {
             "epoch": EPOCH,
             "reg": 0.0,
-            "qry_aug": False,
             "aug": False,
             "traditional_augmentation": True,
         },
         4: {
             "epoch": 6,
             "aug": False,
-            "qry_aug": False,
             "traditional_augmentation": False,
             "reg": 0.0,
         },
         5: {
             "epoch": EPOCH,
             "aug": False,
-            "qry_aug": False,
             "traditional_augmentation": False,
             "reg": 0.0,
             "prox_lam": 0.5,

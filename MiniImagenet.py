@@ -87,7 +87,7 @@ class MiniImagenet(Dataset):
             self.img2label[k] = i + self.startidx  # {"img_name[:9]":label}
         self.cls_num = len(self.data)
 
-        self.create_batch(self.num_episodes)
+        self.create_batch()
 
     def get_transform(self, mode, aug, flip=False):
         """
@@ -158,7 +158,7 @@ class MiniImagenet(Dataset):
                     dictLabels[label] = [filename]
         return dictLabels
 
-    def create_batch(self, num_episodes):
+    def create_batch(self):
         """
         create batch for meta-learning.
         episode here means batch, and it means how many sets we want to retain.
@@ -167,7 +167,7 @@ class MiniImagenet(Dataset):
         """
         self.support_x_batch = []  # support set batch
         self.query_x_batch = []  # query set batch
-        for b in range(num_episodes):  # for each batch
+        for b in range(self.num_episodes):  # for each batch
             # 1.select n_way classes randomly
             selected_cls = np.random.choice(self.cls_num, self.n_way, False)  # no duplicate
             np.random.shuffle(selected_cls)

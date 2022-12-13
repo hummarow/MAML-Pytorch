@@ -39,6 +39,8 @@ class Meta(nn.Module):
         self.rm_augloss = args.rm_augloss
         self.prox_lam = args.prox_lam
         self.prox_task = args.prox_task
+        self.chaser_lam = args.chaser_lam
+        self.chaser_task = args.chaser_task
 
         self.net = Learner(config, args.imgc, args.imgsz)
         self.meta_optim = optim.Adam(self.net.parameters(), lr=self.meta_lr)
@@ -108,6 +110,9 @@ class Meta(nn.Module):
             reg += 0.5 * lam * torch.sum(delta**2)
         return reg
 
+    def chaser_loss(self, weight_1, weight_2, lam):
+        return self.proximal_reg(weight_1, weight_2, lam)
+
     def forward(self, x_spt, y_spt, x_qry, y_qry, t, spt_aug=None, qry_aug=None) -> float:
         """
         :param x_spt:   [b, setsz, c_, h, w]
@@ -152,21 +157,21 @@ class Meta(nn.Module):
 
         for i in range(task_num):
             # model with original data
+            w_0 = finetuned_parameter[i]
             for k in range(self.update_step):
                 # Update parameter with support data
-                w_0 = finetuned_parameter[i]
-                logits = self.net(x_spt[i], w_0, bn_training=True)
+                logits = self.net(x_spt[i], finetuned_parameter[i], bn_training=True)
                 loss = F.cross_entropy(logits, y_spt[i])
                 grad = torch.autograd.grad(
                     loss,
-                    w_0,
+                    finetuned_parameter[i],
                     create_graph=True,
                     retain_graph=True,
                 )
                 finetuned_parameter[i] = list(
                     map(
                         lambda p: p[1] - self.update_lr * p[0],
-                        zip(grad, w_0),
+                        zip(grad, finetuned_parameter[i]),
                     )
                 )
 
@@ -180,31 +185,49 @@ class Meta(nn.Module):
                 prox_reg = self.proximal_reg(w_0, finetuned_parameter[i], self.prox_lam)
                 loss_q += prox_reg
 
+            # bMAML chaser loss
+            if (self.chaser_task == 0 or self.chaser_task == 2) and self.chaser_lam > 0:
+                chaser = finetuned_parameter[i]
+                grad = torch.autograd.grad(
+                    _task_loss,
+                    finetuned_parameter[i],
+                    create_graph=True,
+                    retain_graph=True,
+                )
+                leader = list(
+                    map(
+                        lambda p: p[1] - self.update_lr * p[0],
+                        zip(grad, finetuned_parameter[i]),
+                    )
+                )
+                chaser_reg = self.chaser_loss(chaser, leader)
+                loss_q += chaser_reg
+
             with torch.no_grad():
                 pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
                 num_corrects += torch.eq(pred_q, y_qry[i]).sum().item()  # convert to numpy
 
             # model with augmented data
             if self.need_aug:
+                w_0 = finetuned_parameter_aug[i]
                 for k in range(self.update_step):
-                    w_0 = finetuned_parameter_aug[i]
                     # Update parameter with support data
                     logits = self.net(
                         spt_aug[i],
-                        w_0,
+                        finetuned_parameter_aug[i],
                         bn_training=True,
                     )
                     loss = F.cross_entropy(logits, y_spt[i])
                     grad = torch.autograd.grad(
                         loss,
-                        w_0,
+                        finetuned_parameter_aug[i],
                         create_graph=True,
                         retain_graph=True,
                     )
                     finetuned_parameter_aug[i] = list(
                         map(
                             lambda p: p[1] - self.update_lr * p[0],
-                            zip(grad, w_0),
+                            zip(grad, finetuned_parameter_aug[i]),
                         )
                     )
                 # Calculate loss with query data
@@ -216,6 +239,24 @@ class Meta(nn.Module):
                 if (self.prox_task == 1 or self.prox_task == 2) and self.prox_lam > 0:
                     prox_reg = self.proximal_reg(w_0, finetuned_parameter_aug[i], self.prox_lam)
                     loss_q_aug += prox_reg
+
+                # bMAML chaser loss
+                if (self.chaser_task == 1 or self.chaser_task == 2) and self.chaser_lam > 0:
+                    chaser = finetuned_parameter_aug[i]
+                    grad = torch.autograd.grad(
+                        _task_loss,
+                        finetuned_parameter_aug[i],
+                        create_graph=True,
+                        retain_graph=True,
+                    )
+                    leader = list(
+                        map(
+                            lambda p: p[1] - self.update_lr * p[0],
+                            zip(grad, finetuned_parameter_aug[i]),
+                        )
+                    )
+                    chaser_reg = self.chaser_loss(chaser, leader)
+                    loss_q += chaser_reg
 
         loss_q = torch.div(loss_q, task_num)
         self.writer.add_scalar("loss/original", loss_q, t)

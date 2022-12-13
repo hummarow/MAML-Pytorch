@@ -77,9 +77,10 @@ def train(val_iter, args, model_config, dataloaders, model_path, writer):
     mini, mini_val, mini_test = dataloaders
 
     if val_iter > 0:
-        mini.create_batch(mini.num_episodes)
-        mini_val.create_batch(VALIDATION_EPISODES)
+        mini.create_batch()
+        mini_val.create_batch()
 
+    # Start training
     for epoch in tqdm(range(args.epoch)):
         # fetch meta_num_episodes num of episode each time
         db = DataLoader(
@@ -163,12 +164,11 @@ def train(val_iter, args, model_config, dataloaders, model_path, writer):
                 checkpoint = deepcopy(maml.state_dict())
                 torch.save(checkpoint, model_path)
                 best_step = t
-    # Choose the best model
 
     # maml = Meta(args, config).to(device)
     for i in range(num_test):
         maml.load_state_dict(checkpoint)
-        mini_test.create_batch(TEST_EPISODES)
+        mini_test.create_batch()
         db_test = DataLoader(mini_test, 1, shuffle=True, num_workers=1, pin_memory=True)
         for j, (x_spt, y_spt, x_qry, y_qry) in enumerate(db_test):
             x_spt, y_spt, x_qry, y_qry = (
