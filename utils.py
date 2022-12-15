@@ -5,17 +5,36 @@ import numpy as np
 import scipy.stats
 
 
-def get_path(logdir: str, aug=False, reg=0.0):
-    if logdir != "":
-        logdir = "_" + logdir
+def get_model_dir(args):
+    path = "logs"
+    path = os.path.join(path, args.logdir, args.date)
 
-    if aug:
-        _aug_log_path_name = "Reg" + str(reg) + logdir
-        log_path = os.path.join("logs", "aug", _aug_log_path_name)
+    dir_name = ""
+
+    if args.aug:
+        dir_name += "aug_"
+    if args.flip:
+        dir_name += "flip_"
+    if args.reg > 0:
+        dir_name += str(args.reg)
+        dir_name += "_"
+    if args.prox_lam > 0:
+        dir_name += "imaml_"
+    if args.chaser_lam > 0:
+        dir_name += "bmaml_"
+    if dir_name == "":
+        dir_name = "org"
     else:
-        _log_path_name = "org" + logdir
-        log_path = os.path.join("logs", _log_path_name)
-    return log_path
+        dir_name = dir_name[:-1]
+
+    path = os.path.join(path, dir_name)
+
+    return path
+
+
+def get_log_path(args):
+    model_path = get_model_dir(args)
+    return os.path.join(model_path, args.TIME, "_logs")
 
 
 def mean_confidence_interval(data, confidence=0.95):
@@ -68,7 +87,7 @@ def parse_argument(kwargs):
         "--repeat",
         type=int,
         help="number of validations",
-        default=10,
+        default=5,
     )
     argparser.add_argument(
         "--update_step_test",
@@ -77,7 +96,7 @@ def parse_argument(kwargs):
         default=10,
     )
 
-    argparser.add_argument("--reg", type=float, help="coefficient for regularizer", default=1.0)
+    argparser.add_argument("--reg", type=float, help="coefficient for regularizer", default=0.01)
     argparser.add_argument("--logdir", type=str, help="log directory for tensorboard", default="")
     argparser.add_argument(
         "--aug",
@@ -170,7 +189,7 @@ def print_args(args):
     if args.rm_augloss:
         msg += "Original Loss only\n"
     if args.prox_lam > 0:
-        msg += "iMAML\n"
+        msg += "iMAML {}\n".format(args.prox_lam)
     if args.prox_task != -1:
         msg += "Prox Reg applied to "
         if args.prox_task == 0:
@@ -179,11 +198,23 @@ def print_args(args):
             msg += "augmented dataset only\n"
         else:
             msg += "both of the datasets\n"
+    if args.bmaml:
+        msg += "bMAML\n"
+    if args.chaser_lam > 0:
+        msg += "Chaser {}\n".format(args.chaser_lam)
+    if args.chaser_task != -1:
+        msg += "Chaser Reg applied to "
+        if args.chaser_task == 0:
+            msg += "original dataset only\n"
+        elif args.chaser_task == 1:
+            msg += "augmented dataset only\n"
+        else:
+            msg += "both of the datasets\n"
     if msg == "":
-        print("Original MAML")
-    else:
-        print(msg)
-    print("{} Way {} Shot".format(args.n_way, args.k_spt))
+        msg = "Original MAML\n"
+    msg += "{} Way {} Shot".format(args.n_way, args.k_spt)
+    print(msg)
+    return msg
 
 
 if __name__ == "__main__":

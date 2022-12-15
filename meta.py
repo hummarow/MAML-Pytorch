@@ -43,10 +43,12 @@ class Meta(nn.Module):
         self.chaser_task = args.chaser_task
         self.chaser_lr = args.chaser_lr
         self.bmaml = args.bmaml
+        if self.bmaml:
+            self.chaser_lam = 1.0
 
         self.net = Learner(config, args.imgc, args.imgsz)
         self.meta_optim = optim.Adam(self.net.parameters(), lr=self.meta_lr)
-        log_path = utils.get_path(args.logdir, args.aug, args.reg)
+        log_path = utils.get_log_path(args)
         self.writer = SummaryWriter(log_path)
 
     def clip_grad_by_norm_(self, grad, max_norm):
@@ -285,6 +287,8 @@ class Meta(nn.Module):
         self.writer.add_scalar("loss+Distance", loss_q, t)
         # optimize theta parameters
         self.meta_optim.zero_grad()
+        if self.bmaml:
+            loss_q.requires_grad = True
         loss_q.backward()
 
         self.meta_optim.step()

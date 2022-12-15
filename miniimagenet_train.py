@@ -6,6 +6,7 @@ import tensorboard
 import matplotlib.pyplot as plt
 import os
 import typing
+import pprint
 from datetime import datetime
 from pathlib import Path
 from copy import deepcopy
@@ -28,7 +29,10 @@ device = torch.device("cuda")
 
 now = datetime.now()
 TIME = now.strftime("%y%m%d_%H%M%S")
+date = TIME[:6]
+TIME = TIME[7:]
 seed_list = [1004, 8282, 486, 404, 9797, 1010235, 2848, 10288, 8255, 5825, 101101, 58486, 660660]
+
 
 # Tensorboard custom scalar layout
 layout = {
@@ -49,7 +53,7 @@ layout = {
 imagenet_path = "./datasets/mini-imagenet/"
 
 
-def train(val_iter, args, model_config, dataloaders, model_path, writer):
+def train(val_iter, args, model_config, dataloaders, writer):
     t = 0
     best_val_acc = -float("inf")
     mean_val_accs = []
@@ -162,7 +166,7 @@ def train(val_iter, args, model_config, dataloaders, model_path, writer):
                 if checkpoint:
                     del checkpoint
                 checkpoint = deepcopy(maml.state_dict())
-                torch.save(checkpoint, model_path)
+                torch.save(checkpoint, args.MODEL_PATH)
                 best_step = t
 
     # maml = Meta(args, config).to(device)
@@ -186,6 +190,9 @@ def train(val_iter, args, model_config, dataloaders, model_path, writer):
     mean_test_acc, ci = utils.mean_confidence_interval(test_accs)
     print("Step: {}".format(best_step))
     print("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean_test_acc * 100, ci * 100))
+    with open(args.INFO_PATH, "a") as f:
+        f.write("Step: {}".format(best_step))
+        f.write("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean_test_acc * 100, ci * 100))
     # print("Test: {}%".format(mean_test_acc * 100))
     # print(mean_test_acc)
     return mean_test_acc
@@ -200,22 +207,29 @@ def main(**kwargs):
     validation_num = args.repeat
     best_val_accs = [0] * validation_num
     args.need_aug = args.aug | args.traditional_augmentation
+    args.TIME = TIME
+    args.date = date
+
     MODEL_DIR = "./logs/models/" + (
         "trad_aug" if args.traditional_augmentation else "aug" if args.aug else "org"
     )
+    MODEL_DIR = utils.get_model_dir(args)
     Path(MODEL_DIR).mkdir(parents=True, exist_ok=True)
     model_name = (
         TIME
-        + "_"
-        + ("tradAug_" if args.traditional_augmentation else "")
-        + ("augmented_" if args.aug else "")
-        + ((str(args.reg) + "_" if args.reg > 0 else "") if args.aug else "")
-        + "model.pt"
+        # + "_"
+        # + ("tradAug_" if args.traditional_augmentation else "")
+        # + ("augmented_" if args.aug else "")
+        # + ((str(args.reg) + "_" if args.reg > 0 else "") if args.aug else "")
+        + ".pt"
     )
     MODEL_PATH = os.path.join(MODEL_DIR, model_name)
-    print(TIME)
-    utils.print_args(args)
+    info_name = TIME + ".info"
+    INFO_PATH = os.path.join(MODEL_DIR, info_name)
+    args.MODEL_PATH = MODEL_PATH
+    args.INFO_PATH = INFO_PATH
 
+    print(TIME)
     model_config = [
         ("conv2d", [32, 3, 3, 3, 1, 0]),  # [ch_out, ch_in, kernel, kernel, stride, pad]
         ("relu", [True]),  # [inplace]
@@ -237,7 +251,7 @@ def main(**kwargs):
         ("linear", [args.n_way, 32 * 5 * 5]),
     ]
 
-    log_path = utils.get_path(args.logdir, args.aug, args.reg)
+    log_path = utils.get_log_path(args)
     writer = SummaryWriter(log_path)
     writer.add_custom_scalars(layout)
 
@@ -247,16 +261,23 @@ def main(**kwargs):
     mini_val = MiniImagenet(imagenet_path, mode="val", num_episodes=VALIDATION_EPISODES, args=args)
     mini_test = MiniImagenet(imagenet_path, mode="test", num_episodes=TEST_EPISODES, args=args)
 
+    with open(INFO_PATH, "w") as f:
+        pprint.pprint(vars(args), f)
+        f.write("\n------------------------------\n\n")
+        f.write(utils.print_args(args))
+        f.write("\n------------------------------\n\n")
+
     for val_iter in range(validation_num):
-        mean_test_acc = train(
-            val_iter, args, model_config, [mini, mini_val, mini_test], MODEL_PATH, writer
-        )
+        mean_test_acc = train(val_iter, args, model_config, [mini, mini_val, mini_test], writer)
         best_test_accs[val_iter] = mean_test_acc
     utils.print_args(args)
     mean, ci = utils.mean_confidence_interval(best_test_accs)
     print("Test Accuracies: ")
     print(best_test_accs)
     print("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean * 100, ci * 100))
+    with open(INFO_PATH, "a") as f:
+        f.write("Test Accuracies: {}".format(best_test_accs))
+        f.write("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean * 100, ci * 100))
 
     return mean, ci
 
