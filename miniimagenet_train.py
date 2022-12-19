@@ -161,20 +161,22 @@ def train(val_iter, args, model_config, dataloaders, writer):
                 writer.add_scalar("Accuracy", mean_acc, t)
                 writer.add_scalar("Accuracy/Val", mean_acc, t)
                 mean_val_accs.append(mean_acc)
-            # Save the best model of given validation step
-            if mean_val_accs[-1] > best_val_acc:
-                best_val_acc = mean_val_accs[-1]
-                if checkpoint:
-                    del checkpoint
-                checkpoint = deepcopy(maml.state_dict())
-                torch.save(checkpoint, args.MODEL_PATH)
-                best_step = t
 
-            # TODO: combine above code with early stopping
-            es(mean_acc, maml)
-            if es.early_stop:
-                print("Early stopping")
-                break
+                # Save the best model of given validation step
+                if mean_val_accs[-1] > best_val_acc:
+                    best_val_acc = mean_val_accs[-1]
+                    if checkpoint:
+                        del checkpoint
+                    checkpoint = deepcopy(maml.state_dict())
+                    torch.save(checkpoint, args.MODEL_PATH)
+                    best_step = t
+
+                # TODO: combine code above with early stopping
+                es(mean_acc, maml)
+                if es.early_stop:
+                    print("Early stopping")
+                    break
+
         if es.early_stop:
             break
 
