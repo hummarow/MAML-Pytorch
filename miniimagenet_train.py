@@ -86,7 +86,7 @@ def train(val_iter, args, model_config, dataloaders, writer):
 
     # Start training
     for epoch in tqdm(range(args.epoch)):
-        es = utils.EarlyStopping()
+        es = utils.EarlyStopping(path=args.MODEL_DIR)
         # fetch meta_num_episodes num of episode each time
         db = DataLoader(
             mini,
@@ -235,6 +235,7 @@ def main(**kwargs):
     MODEL_PATH = os.path.join(MODEL_DIR, model_name)
     info_name = TIME + ".info"
     INFO_PATH = os.path.join(MODEL_DIR, info_name)
+    args.MODEL_DIR = MODEL_DIR
     args.MODEL_PATH = MODEL_PATH
     args.INFO_PATH = INFO_PATH
 

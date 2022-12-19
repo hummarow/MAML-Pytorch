@@ -1,4 +1,5 @@
 import typing
+import sys
 import os
 import argparse
 import numpy as np
@@ -10,7 +11,7 @@ class EarlyStopping:
     # https://quokkas.tistory.com/37
     """주어진 patience 이후로 validation loss가 개선되지 않으면 학습을 조기 중지"""
 
-    def __init__(self, patience=7, verbose=False, delta=0, path="checkpoint.pt"):
+    def __init__(self, patience=7, verbose=False, delta=0, path="checkpoint.pt", monitor="loss"):
         """
         Args:
             patience (int): validation loss가 개선된 후 기다리는 기간
@@ -21,23 +22,35 @@ class EarlyStopping:
                             Default: 0
             path (str): checkpoint저장 경로
                             Default: 'checkpoint.pt'
+            monitor (str): performance measure. "loss" or "acc"
+                            Default: loss
         """
+        # TODO: best_score and baseline_measure seems to have similar perposes
         self.patience = patience
         self.verbose = verbose
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.val_loss_min = np.Inf
+        self.monitor = monitor
+        if monitor == "loss":
+            self.baseline_measure = np.Inf
+        elif monitor == "acc":
+            self.baseline_measure = -np.Inf
+        else:
+            sys.exit("Monitor of early stopping should be 'loss' or 'acc', but is {}.".format(mode))
         self.delta = delta
         self.path = path
 
-    def __call__(self, val_loss, model):
+    def __call__(self, measure, model):
 
-        score = -val_loss
+        if self.monitor == "loss":
+            score = -measure
+        elif self.monitor == "acc":
+            score = measure
 
         if self.best_score is None:
             self.best_score = score
-            self.save_checkpoint(val_loss, model)
+            self.save_checkpoint(measure, model)
         elif score < self.best_score + self.delta:
             self.counter += 1
             print(f"EarlyStopping counter: {self.counter} out of {self.patience}")
@@ -45,17 +58,17 @@ class EarlyStopping:
                 self.early_stop = True
         else:
             self.best_score = score
-            self.save_checkpoint(val_loss, model)
+            self.save_checkpoint(measure, model)
             self.counter = 0
 
-    def save_checkpoint(self, val_loss, model):
+    def save_checkpoint(self, measure, model):
         """validation loss가 감소하면 모델을 저장한다."""
         if self.verbose:
             print(
-                f"Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ..."
+                f"Performance decreased ({self.baseline_measure:.6f} --> {measure:.6f}).  Saving model ..."
             )
         torch.save(model.state_dict(), self.path)
-        self.val_loss_min = val_loss
+        self.baseline_measure = measure
 
 
 def get_model_dir(args):
