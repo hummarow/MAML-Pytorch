@@ -247,38 +247,6 @@ class Learner(nn.Module):
 
         return x
 
-    # def weight_clustering(self, weight_1, weight_2):
-    #     # Flatten weight_1
-    #     weight_flat = []
-    #     for i in range(len(weight_1)):
-    #         w = None
-    #         for fw in weight_1[i]:
-    #             if not torch.is_tensor(w):
-    #                 w = torch.flatten(fw)
-    #             else:
-    #                 w = torch.cat([w, torch.flatten(fw)], dim=0)
-    #         weight_flat.append(w)
-    #     weight_flat = torch.stack(weight_flat, axis=1)
-    #     # Flatten weight_2
-    #     weight_flat_2 = []
-    #     for i in range(len(weight_2)):
-    #         w = None
-    #         for fw in weight_2[i]:
-    #             if not torch.is_tensor(w):
-    #                 w = torch.flatten(fw)
-    #             else:
-    #                 w = torch.cat([w, torch.flatten(fw)], dim=0)
-    #         weight_flat_2.append(w)
-    #     weight_flat_2 = torch.stack(weight_flat_2, axis=1)
-
-    #     #        diff = weight_flat - weight_flat_2
-    #     st = torch.stack([weight_flat, weight_flat_2])
-    #     diff = torch.norm(st, p="fro", dim=0)
-    #     diff = torch.norm(diff, p="fro", dim=0)
-
-    #     norm = torch.mean(diff)
-    #     return norm
-
     def zero_grad(self, vars=None):
         """
 
@@ -302,12 +270,3 @@ class Learner(nn.Module):
         """
         return self.vars
 
-
-# class ResNet(nn.Module):
-#     def __init__(self):
-#         super(ResNet, self).__init__()
-#         self.norm = nn.BatchNorm2d
-#         self.conv = nn.Conv2d(...)  #
-#         self.bn - nn.BatchNorm2d(...)   # 64
-
-#     def get_block(self):

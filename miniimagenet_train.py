@@ -86,6 +86,7 @@ def train(val_iter, args, model_config, dataloaders, writer):
 
     # Start training
     for epoch in tqdm(range(args.epoch)):
+        es = utils.EarlyStopping()
         # fetch meta_num_episodes num of episode each time
         db = DataLoader(
             mini,
@@ -169,6 +170,14 @@ def train(val_iter, args, model_config, dataloaders, writer):
                 torch.save(checkpoint, args.MODEL_PATH)
                 best_step = t
 
+            # TODO: combine above code with early stopping
+            es(mean_acc, maml)
+            if es.early_stop:
+                print("Early stopping")
+                break
+        if es.early_stop:
+            break
+
     # maml = Meta(args, config).to(device)
     for i in range(num_test):
         maml.load_state_dict(checkpoint)
@@ -191,8 +200,8 @@ def train(val_iter, args, model_config, dataloaders, writer):
     print("Step: {}".format(best_step))
     print("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean_test_acc * 100, ci * 100))
     with open(args.INFO_PATH, "a") as f:
-        f.write("Step: {}".format(best_step))
-        f.write("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean_test_acc * 100, ci * 100))
+        f.write("Step: {}\n".format(best_step))
+        f.write("Test Accuracy: {:.2f}% +- {:.2f}%\n".format(mean_test_acc * 100, ci * 100))
     # print("Test: {}%".format(mean_test_acc * 100))
     # print(mean_test_acc)
     return mean_test_acc
@@ -276,8 +285,8 @@ def main(**kwargs):
     print(best_test_accs)
     print("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean * 100, ci * 100))
     with open(INFO_PATH, "a") as f:
-        f.write("Test Accuracies: {}".format(best_test_accs))
-        f.write("Test Accuracy: {:.2f}% +- {:.2f}%".format(mean * 100, ci * 100))
+        f.write("Test Accuracies: {}\n".format(best_test_accs))
+        f.write("Test Accuracy: {:.2f}% +- {:.2f}%\n".format(mean * 100, ci * 100))
 
     return mean, ci
 
