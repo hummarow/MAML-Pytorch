@@ -86,7 +86,7 @@ def train(val_iter, args, model_config, dataloaders, writer):
 
     # Start training
     for epoch in tqdm(range(args.epoch)):
-        es = utils.EarlyStopping(path=args.MODEL_DIR)
+        es = utils.EarlyStopping(path=os.path.join(args.MODEL_DIR, "checkpoint.pt"))
         # fetch meta_num_episodes num of episode each time
         db = DataLoader(
             mini,
