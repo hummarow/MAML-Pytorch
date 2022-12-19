@@ -53,7 +53,7 @@ layout = {
 imagenet_path = "./datasets/mini-imagenet/"
 
 
-def train(val_iter, args, model_config, dataloaders, writer):
+def train(val_iter, args, model_config, dataloaders):
     t = 0
     best_val_acc = -float("inf")
     mean_val_accs = []
@@ -86,6 +86,9 @@ def train(val_iter, args, model_config, dataloaders, writer):
 
     # Start training
     for epoch in tqdm(range(args.epoch)):
+        # Create writer for every epoch
+        writer = SummaryWriter(os.path.join(args.LOG_PATH, str(epoch)))
+        writer.add_custom_scalars(args.tensorboard_layout)
         es = utils.EarlyStopping(path=os.path.join(args.MODEL_DIR, "checkpoint.pt"), monitor="acc")
         # fetch meta_num_episodes num of episode each time
         db = DataLoader(
@@ -263,9 +266,8 @@ def main(**kwargs):
         ("linear", [args.n_way, 32 * 5 * 5]),
     ]
 
-    log_path = utils.get_log_path(args)
-    writer = SummaryWriter(log_path)
-    writer.add_custom_scalars(layout)
+    args.LOG_PATH = utils.get_log_path(args)
+    args.tensorboard_layout = layout
 
     best_test_accs = [0] * validation_num
 
@@ -280,7 +282,7 @@ def main(**kwargs):
         f.write("\n------------------------------\n\n")
 
     for val_iter in range(validation_num):
-        mean_test_acc = train(val_iter, args, model_config, [mini, mini_val, mini_test], writer)
+        mean_test_acc = train(val_iter, args, model_config, [mini, mini_val, mini_test])
         best_test_accs[val_iter] = mean_test_acc
     utils.print_args(args)
     mean, ci = utils.mean_confidence_interval(best_test_accs)
