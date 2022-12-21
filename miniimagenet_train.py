@@ -84,11 +84,12 @@ def train(val_iter, args, model_config, dataloaders):
         mini.create_batch()
         mini_val.create_batch()
 
+    # Create writer for every validation iteration
+    writer = SummaryWriter(os.path.join(args.LOG_PATH, str(val_iter)))
+    writer.add_custom_scalars(args.tensorboard_layout)
+
     # Start training
     for epoch in tqdm(range(args.epoch)):
-        # Create writer for every epoch
-        writer = SummaryWriter(os.path.join(args.LOG_PATH, str(epoch)))
-        writer.add_custom_scalars(args.tensorboard_layout)
         es = utils.EarlyStopping(path=os.path.join(args.MODEL_DIR, "checkpoint.pt"), monitor="acc")
         # fetch meta_num_episodes num of episode each time
         db = DataLoader(
